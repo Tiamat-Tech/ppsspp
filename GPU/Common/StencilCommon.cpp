@@ -119,7 +119,7 @@ void GenerateStencilFs(char *buffer, const ShaderLanguageDesc &lang, const Draw:
 	writer.HighPrecisionFloat();
 	writer.DeclareSamplers(samplers);
 
-	if (bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL)) {
+	if (bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL_MALI) || bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL_ADRENO)) {
 		writer.C("layout (depth_unchanged) out float gl_FragDepth;\n");
 	}
 
@@ -137,7 +137,7 @@ void GenerateStencilFs(char *buffer, const ShaderLanguageDesc &lang, const Draw:
 		writer.C("  if (mod(floor(shifted), 2.0) < 0.99) DISCARD;\n");
 	}
 
-	if (bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL)) {
+	if (bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL_MALI) || bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL_ADRENO)) {
 		writer.C("  gl_FragDepth = gl_FragCoord.z;\n");
 	}
 
@@ -166,7 +166,7 @@ bool FramebufferManagerCommon::PerformWriteStencilFromMemory(u32 addr, int size,
 	using namespace Draw;
 
 	addr &= 0x3FFFFFFF;
-	if (!MayIntersectFramebuffer(addr)) {
+	if (!MayIntersectFramebufferColor(addr)) {
 		return false;
 	}
 
@@ -230,11 +230,9 @@ bool FramebufferManagerCommon::PerformWriteStencilFromMemory(u32 addr, int size,
 		_assert_(stencilUploadFs && stencilUploadVs);
 
 		InputLayoutDesc desc = {
+			8,
 			{
-				{ 8, false },
-			},
-			{
-				{ 0, SEM_POSITION, DataFormat::R32G32_FLOAT, 0 },
+				{ SEM_POSITION, DataFormat::R32G32_FLOAT, 0 },
 			},
 		};
 		InputLayout *inputLayout = draw_->CreateInputLayout(desc);
@@ -304,7 +302,7 @@ bool FramebufferManagerCommon::PerformWriteStencilFromMemory(u32 addr, int size,
 	}
 
 	Draw::Viewport viewport = { 0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f };
-	draw_->SetViewports(1, &viewport);
+	draw_->SetViewport(viewport);
 
 	// TODO: Switch the format to a single channel format?
 	Draw::Texture *tex = MakePixelTexture(src, dstBuffer->fb_format, dstBuffer->fb_stride, dstBuffer->width, dstBuffer->height);
@@ -351,10 +349,9 @@ bool FramebufferManagerCommon::PerformWriteStencilFromMemory(u32 addr, int size,
 	if (useBlit) {
 		// Note that scissors don't affect blits on other APIs than OpenGL, so might want to try to get rid of this.
 		draw_->SetScissorRect(0, 0, dstBuffer->renderWidth, dstBuffer->renderHeight);
-		draw_->BlitFramebuffer(blitFBO, 0, 0, w, h, dstBuffer->fbo, 0, 0, dstBuffer->renderWidth, dstBuffer->renderHeight, Draw::FB_STENCIL_BIT, Draw::FB_BLIT_NEAREST, "WriteStencilFromMemory_Blit");
+		draw_->BlitFramebuffer(blitFBO, 0, 0, w, h, dstBuffer->fbo, 0, 0, dstBuffer->renderWidth, dstBuffer->renderHeight, Draw::Aspect::STENCIL_BIT, Draw::FB_BLIT_NEAREST, "WriteStencilFromMemory_Blit");
 		RebindFramebuffer("RebindFramebuffer - Stencil");
 	}
-	tex->Release();
 
 	draw_->Invalidate(InvalidationFlags::CACHED_RENDER_STATE);
 	gstate_c.Dirty(DIRTY_ALL_RENDER_STATE);

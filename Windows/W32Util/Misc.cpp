@@ -1,12 +1,16 @@
 #include "ppsspp_config.h"
-#include "CommonWindows.h"
+#include "Common/CommonWindows.h"
 
 #include <WinUser.h>
 #include <shellapi.h>
 #include <commctrl.h>
+#include <ShlObj.h>
 
 #include "Misc.h"
 #include "Common/Data/Encoding/Utf8.h"
+#include "Common/StringUtils.h"
+#include "Common/File/FileUtil.h"
+#include "Common/Log.h"
 
 bool KeyDownAsync(int vkey) {
 #if PPSSPP_PLATFORM(UWP)
@@ -87,6 +91,36 @@ namespace W32Util
 		SetWindowPos(hwnd, style, 0,0,0,0, SWP_NOMOVE | SWP_NOSIZE);
 	}
 
+	void GetWindowRes(HWND hWnd, int *xres, int *yres) {
+		RECT rc;
+		GetClientRect(hWnd, &rc);
+		*xres = rc.right - rc.left;
+		*yres = rc.bottom - rc.top;
+	}
+
+	void ShowFileInFolder(const std::string &path) {
+		// SHParseDisplayName can't handle relative paths, so normalize first.
+		std::string resolved = ReplaceAll(File::ResolvePath(path), "/", "\\");
+
+		// Shell also can't handle \\?\UNC\ paths.
+		// TODO: Move this to ResolvePath?
+		if (startsWith(resolved, "\\\\?\\UNC\\")) {
+			resolved = "\\" + resolved.substr(7);
+		}
+
+		PIDLIST_ABSOLUTE pidl = nullptr;
+		std::wstring wresolved = ConvertUTF8ToWString(resolved);
+		HRESULT hr = SHParseDisplayName(wresolved.c_str(), nullptr, &pidl, 0, nullptr);
+
+		if (pidl) {
+			if (SUCCEEDED(hr))
+				SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+			ILFree(pidl);
+		} else {
+			ERROR_LOG(Log::System, "SHParseDisplayName failed: %s", resolved.c_str());
+		}
+	}
+
 	static const wchar_t *RemoveExecutableFromCommandLine(const wchar_t *cmdline) {
 		if (!cmdline) {
 			return L"";
@@ -141,6 +175,34 @@ namespace W32Util
 		SpawnNewInstance(overrideArgs, args);
 
 		ExitProcess(0);
+	}
+
+	bool ExecuteAndGetReturnCode(const wchar_t *executable, const wchar_t *cmdline, const wchar_t *currentDirectory, DWORD *exitCode) {
+		PROCESS_INFORMATION processInformation = { 0 };
+		STARTUPINFO startupInfo = { 0 };
+		startupInfo.cb = sizeof(startupInfo);
+
+		std::wstring cmdlineW;
+		cmdlineW += L"PPSSPP ";  // could also put the executable name as first argument, but concerned about escaping.
+		cmdlineW += cmdline;
+
+		// Create the process
+		bool result = CreateProcess(executable, (LPWSTR)cmdlineW.c_str(),
+			NULL, NULL, FALSE,
+			NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW,
+			NULL, currentDirectory, &startupInfo, &processInformation);
+
+		if (!result) {
+			// We failed.
+			return false;
+		}
+
+		// Successfully created the process.  Wait for it to finish.
+		WaitForSingleObject(processInformation.hProcess, INFINITE);
+		result = GetExitCodeProcess(processInformation.hProcess, exitCode);
+		CloseHandle(processInformation.hProcess);
+		CloseHandle(processInformation.hThread);
+		return result != 0;
 	}
 
 	void SpawnNewInstance(bool overrideArgs, const std::string &args) {
@@ -290,7 +352,7 @@ int GenericListControl::HandleNotify(LPARAM lParam) {
 		NMLVDISPINFO* dispInfo = (NMLVDISPINFO*)lParam;
 
 		stringBuffer[0] = 0;
-		GetColumnText(stringBuffer,dispInfo->item.iItem,dispInfo->item.iSubItem);
+		GetColumnText(stringBuffer, ARRAY_SIZE(stringBuffer), dispInfo->item.iItem,dispInfo->item.iSubItem);
 		
 		if (stringBuffer[0] == 0)
 			wcscat(stringBuffer,L"Invalid");
@@ -349,7 +411,7 @@ int GenericListControl::OnIncrementalSearch(int startRow, const wchar_t *str, bo
 		for (int i = 0; i < size; ++i) {
 			int r = (startRow + i) % size;
 			stringBuffer[0] = 0;
-			GetColumnText(stringBuffer, r, c);
+			GetColumnText(stringBuffer, ARRAY_SIZE(stringBuffer), r, c);
 			int difference = partial ? _wcsnicmp(str, stringBuffer, searchlen) : _wcsicmp(str, stringBuffer);
 			if (difference == 0)
 				return r;
@@ -529,7 +591,7 @@ void GenericListControl::CopyRows(int start, int size)
 		for (int c = 0; c < columnCount; ++c)
 		{
 			stringBuffer[0] = 0;
-			GetColumnText(stringBuffer, r, c);
+			GetColumnText(stringBuffer, ARRAY_SIZE(stringBuffer), r, c);
 			data.append(stringBuffer);
 			if (c < columnCount - 1)
 				data.append(L"\t");

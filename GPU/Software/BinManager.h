@@ -65,7 +65,7 @@ struct BinQueue {
 	}
 
 	void Setup() {
-		items_ = (T *)AllocateAlignedMemory(sizeof(T) * N, 16);
+		items_ = (T *)AllocateAlignedMemory(sizeof_, 16);
 	}
 
 	void Reset() {
@@ -117,11 +117,12 @@ struct BinQueue {
 		return items_[tail_];
 	}
 
-	void PushPeeked() {
+	size_t PushPeeked() {
 		size_t i = tail_++;
 		if (i + 1 == N)
 			tail_ -= N;
 		size_++;
+		return i;
 	}
 
 	size_t Size() const {
@@ -152,6 +153,7 @@ struct BinQueue {
 	std::atomic<size_t> head_;
 	std::atomic<size_t> tail_ ;
 	std::atomic<size_t> size_;
+	static constexpr size_t sizeof_ = sizeof(T) * N;
 };
 
 union BinClut {
@@ -275,7 +277,7 @@ private:
 	void MarkPendingReads(const Rasterizer::RasterizerState &state);
 	void MarkPendingWrites(const Rasterizer::RasterizerState &state);
 	bool HasTextureWrite(const Rasterizer::RasterizerState &state);
-	bool IsExactSelfRender(const Rasterizer::RasterizerState &state, const BinItem &item);
+	static bool IsExactSelfRender(const Rasterizer::RasterizerState &state, const BinItem &item);
 	void OptimizePendingStates(uint16_t first, uint16_t last);
 	BinCoords Scissor(BinCoords range);
 	BinCoords Range(const VertexData &v0, const VertexData &v1, const VertexData &v2);

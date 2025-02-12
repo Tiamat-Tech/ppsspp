@@ -36,7 +36,6 @@ struct Atlas;
 // This is the drawbuffer used for UI. Remember to flush it at the end of the frame.
 // TODO: One should probably pass it in through UIInit.
 extern DrawBuffer ui_draw2d;
-extern DrawBuffer ui_draw2d_front;	// for things that need to be on top of the rest
 
 // TODO: These don't really belong here.
 
@@ -54,14 +53,7 @@ class StringVectorListAdapter : public UIListAdapter {
 public:
 	StringVectorListAdapter(const std::vector<std::string> *items) : items_(items) {}
 	size_t getCount() const override { return items_->size(); }
-	void drawItem(int item, int x, int y, int w, int h, bool active) const override;
 
 private:
 	const std::vector<std::string> *items_;
 };
-
-
-// Begins/flushes the two UI drawbuffers together.
-void UIBegin(Draw::Pipeline *shaderSet);
-void UIFlush();
-

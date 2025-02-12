@@ -36,20 +36,31 @@ void UIBackgroundShutdown();
 
 inline void NoOpVoidBool(bool) {}
 
+class BackgroundScreen : public UIScreen {
+public:
+	ScreenRenderFlags render(ScreenRenderMode mode) override;
+	void sendMessage(UIMessage message, const char *value) override;
+
+private:
+	void CreateViews() override {}
+	const char *tag() const override { return "bg"; }
+
+	Path gamePath_;
+};
+
+// This doesn't have anything to do with the background anymore. It's just a PPSSPP UIScreen
+// that knows how handle sendMessage properly. Same for all the below.
 class UIScreenWithBackground : public UIScreen {
 public:
 	UIScreenWithBackground() : UIScreen() {}
 protected:
-	void DrawBackground(UIContext &dc) override;
-	void sendMessage(const char *message, const char *value) override;
+	void sendMessage(UIMessage message, const char *value) override;
 };
 
 class UIScreenWithGameBackground : public UIScreenWithBackground {
 public:
-	UIScreenWithGameBackground(const std::string &gamePath)
-		: UIScreenWithBackground(), gamePath_(gamePath) {}
-	void DrawBackground(UIContext &dc) override;
-	void sendMessage(const char *message, const char *value) override;
+	UIScreenWithGameBackground(const Path &gamePath) : UIScreenWithBackground(), gamePath_(gamePath) {}
+	void sendMessage(UIMessage message, const char *value) override;
 protected:
 	Path gamePath_;
 
@@ -61,9 +72,7 @@ class UIDialogScreenWithBackground : public UIDialogScreen {
 public:
 	UIDialogScreenWithBackground() : UIDialogScreen() {}
 protected:
-	void DrawBackground(UIContext &dc) override;
-	void sendMessage(const char *message, const char *value) override;
-
+	void sendMessage(UIMessage message, const char *value) override;
 	void AddStandardBack(UI::ViewGroup *parent);
 };
 
@@ -71,18 +80,14 @@ class UIDialogScreenWithGameBackground : public UIDialogScreenWithBackground {
 public:
 	UIDialogScreenWithGameBackground(const Path &gamePath)
 		: UIDialogScreenWithBackground(), gamePath_(gamePath) {}
-	void DrawBackground(UIContext &dc) override;
-	void sendMessage(const char *message, const char *value) override;
+	void sendMessage(UIMessage message, const char *value) override;
 protected:
 	Path gamePath_;
-
-	bool forceTransparent_ = false;
-	bool darkenGameBackground_ = true;
 };
 
 class PromptScreen : public UIDialogScreenWithGameBackground {
 public:
-	PromptScreen(const Path& gamePath, std::string message, std::string yesButtonText, std::string noButtonText,
+	PromptScreen(const Path& gamePath, std::string_view message, std::string_view yesButtonText, std::string_view noButtonText,
 		std::function<void(bool)> callback = &NoOpVoidBool);
 
 	void CreateViews() override;
@@ -92,9 +97,6 @@ public:
 	const char *tag() const override { return "Prompt"; }
 
 private:
-	UI::EventReturn OnYes(UI::EventParams &e);
-	UI::EventReturn OnNo(UI::EventParams &e);
-
 	std::string message_;
 	std::string yesButtonText_;
 	std::string noButtonText_;
@@ -103,7 +105,7 @@ private:
 
 class NewLanguageScreen : public UI::ListPopupScreen {
 public:
-	NewLanguageScreen(const std::string &title);
+	NewLanguageScreen(std::string_view title);
 
 	const char *tag() const override { return "NewLanguage"; }
 
@@ -115,7 +117,7 @@ private:
 
 class TextureShaderScreen : public UI::ListPopupScreen {
 public:
-	TextureShaderScreen(const std::string &title);
+	TextureShaderScreen(std::string_view title);
 
 	void CreateViews() override;
 
@@ -140,8 +142,8 @@ public:
 	bool key(const KeyInput &key) override;
 	void touch(const TouchInput &touch) override;
 	void update() override;
-	void render() override;
-	void sendMessage(const char *message, const char *value) override;
+	void DrawForeground(UIContext &ui) override;
+	void sendMessage(UIMessage message, const char *value) override;
 	void CreateViews() override {}
 
 	const char *tag() const override { return "Logo"; }
@@ -158,7 +160,7 @@ class CreditsScreen : public UIDialogScreenWithBackground {
 public:
 	CreditsScreen();
 	void update() override;
-	void render() override;
+	void DrawForeground(UIContext &ui) override;
 
 	void CreateViews() override;
 
@@ -171,19 +173,16 @@ private:
 	UI::EventReturn OnForums(UI::EventParams &e);
 	UI::EventReturn OnDiscord(UI::EventParams &e);
 	UI::EventReturn OnShare(UI::EventParams &e);
-	UI::EventReturn OnTwitter(UI::EventParams &e);
+	UI::EventReturn OnX(UI::EventParams &e);
 
 	double startTime_ = 0.0;
 };
 
 class SettingInfoMessage : public UI::LinearLayout {
 public:
-	SettingInfoMessage(int align, UI::AnchorLayoutParams *lp);
+	SettingInfoMessage(int align, float cutOffY, UI::AnchorLayoutParams *lp);
 
-	void SetBottomCutoff(float y) {
-		cutOffY_ = y;
-	}
-	void Show(const std::string &text, const UI::View *refView = nullptr);
+	void Show(std::string_view text, const UI::View *refView = nullptr);
 
 	void Draw(UIContext &dc) override;
 	std::string GetText() const;

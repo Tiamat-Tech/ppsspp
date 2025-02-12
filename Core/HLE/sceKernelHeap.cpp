@@ -2,11 +2,13 @@
 
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
+#include "Common/StringUtils.h"
 #include "Core/HLE/HLE.h"
 #include "Core/HLE/FunctionWrappers.h"
 #include "Core/HLE/sceKernel.h"
 #include "Core/HLE/sceKernelHeap.h"
 #include "Core/HLE/sceKernelMemory.h"
+#include "Core/Reporting.h"
 #include "Core/Util/BlockAllocator.h"
 
 static const u32 KERNEL_HEAP_BLOCK_HEADER_SIZE = 8;
@@ -48,13 +50,13 @@ static int sceKernelCreateHeap(int partitionId, int size, int flags, const char 
 	BlockAllocator *allocator = BlockAllocatorFromAddr(partitionId);
 	// TODO: Validate error code.
 	if (!allocator)
-		return hleLogError(SCEKERNEL, SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT, "invalid partition");
+		return hleLogError(Log::sceKernel, SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT, "invalid partition");
 
 	// TODO: This should probably actually use flags?  Name?
-	u32 addr = allocator->Alloc(allocSize, g_fromBottom, "SysMemForKernel-Heap");
+	u32 addr = allocator->Alloc(allocSize, g_fromBottom, StringFromFormat("KernelHeap/%s", Name).c_str());
 	if (addr == (u32)-1) {
 		// TODO: Validate error code.
-		return hleLogError(SCEKERNEL, SCE_KERNEL_ERROR_NO_MEMORY, "fFailed to allocate %d bytes of memory", size);
+		return hleLogError(Log::sceKernel, SCE_KERNEL_ERROR_NO_MEMORY, "fFailed to allocate %d bytes of memory", size);
 	}
 
 	KernelHeap *heap = new KernelHeap();
@@ -67,54 +69,54 @@ static int sceKernelCreateHeap(int partitionId, int size, int flags, const char 
 	heap->address = addr;
 	heap->alloc.Init(heap->address + 128, heap->size - 128, true);
 	heap->uid = uid;
-	return hleLogSuccessInfoX(SCEKERNEL, uid);
+	return hleLogInfo(Log::sceKernel, uid);
 }
 
 static int sceKernelAllocHeapMemory(int heapId, int size) {
 	u32 error;
 	KernelHeap *heap = kernelObjects.Get<KernelHeap>(heapId, error);
 	if (!heap)
-		return hleLogError(SCEKERNEL, error, "sceKernelAllocHeapMemory(%d): invalid heapId", heapId);
+		return hleLogError(Log::sceKernel, error, "invalid heapId");
 
 	// There's 8 bytes at the end of every block, reserved.
 	u32 memSize = KERNEL_HEAP_BLOCK_HEADER_SIZE + size;
 	u32 addr = heap->alloc.Alloc(memSize, true);
-	return hleLogSuccessInfoX(SCEKERNEL, addr);
+	return hleLogInfo(Log::sceKernel, addr);
 }
 
 static int sceKernelDeleteHeap(int heapId) {
 	u32 error;
 	KernelHeap *heap = kernelObjects.Get<KernelHeap>(heapId, error);
 	if (!heap)
-		return hleLogError(SCEKERNEL, error, "sceKernelDeleteHeap(%d): invalid heapId", heapId);
+		return hleLogError(Log::sceKernel, error, "invalid heapId");
 
 	// Not using heap->partitionId here for backwards compatibility with old save states.
 	BlockAllocator *allocator = BlockAllocatorFromAddr(heap->address);
 	if (allocator)
 		allocator->Free(heap->address);
 	kernelObjects.Destroy<KernelHeap>(heap->uid);
-	return hleLogSuccessInfoX(SCEKERNEL, 0);
+	return hleLogInfo(Log::sceKernel, 0);
 }
 
 static u32 sceKernelPartitionTotalFreeMemSize(int partitionId) {
 	BlockAllocator *allocator = BlockAllocatorFromID(partitionId);
 	// TODO: Validate error code.
 	if (!allocator)
-		return hleLogError(SCEKERNEL, SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT, "invalid partition");
-	return hleLogWarning(SCEKERNEL, allocator->GetTotalFreeBytes());
+		return hleLogError(Log::sceKernel, SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT, "invalid partition");
+	return hleLogWarning(Log::sceKernel, allocator->GetTotalFreeBytes());
 }
 
 static u32 sceKernelPartitionMaxFreeMemSize(int partitionId) {
 	BlockAllocator *allocator = BlockAllocatorFromID(partitionId);
 	// TODO: Validate error code.
 	if (!allocator)
-		return hleLogError(SCEKERNEL, SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT, "invalid partition");
-	return hleLogWarning(SCEKERNEL, allocator->GetLargestFreeBlockSize());
+		return hleLogError(Log::sceKernel, SCE_KERNEL_ERROR_ILLEGAL_ARGUMENT, "invalid partition");
+	return hleLogWarning(Log::sceKernel, allocator->GetLargestFreeBlockSize());
 }
 
-static u32 SysMemForKernel_536AD5E1()
+static u32 sceKernelGetUidmanCB()
 {
-	ERROR_LOG(SCEKERNEL, "UNIMP SysMemForKernel_536AD5E1");
+	ERROR_LOG_REPORT(Log::sceKernel, "UNIMP sceKernelGetUidmanCB");
 	return 0;
 }
 
@@ -122,33 +124,32 @@ static int sceKernelFreeHeapMemory(int heapId, u32 block) {
 	u32 error;
 	KernelHeap* heap = kernelObjects.Get<KernelHeap>(heapId, error);
 	if (!heap)
-		return hleLogError(SCEKERNEL, error, "sceKernelFreeHeapMemory(%d): invalid heapId", heapId);
+		return hleLogError(Log::sceKernel, error, "invalid heapId");
 	if (block == 0) {
-		return hleLogSuccessInfoI(SCEKERNEL, 0, "sceKernelFreeHeapMemory(%d): heapId,0: block", heapId);
+		return hleLogInfo(Log::sceKernel, 0, "heapId,0: block");
 	}
 	if (!heap->alloc.FreeExact(block)) {
-		return hleLogError(SCEKERNEL, SCE_KERNEL_ERROR_INVALID_POINTER, "invalid pointer %08x", block);
+		return hleLogError(Log::sceKernel, SCE_KERNEL_ERROR_INVALID_POINTER, "invalid pointer %08x", block);
 	}
-	return hleLogSuccessInfoI(SCEKERNEL, 0, "sceKernelFreeHeapMemory(%d): heapId, block", heapId, block);
-
+	return hleLogInfo(Log::sceKernel, 0, "heapId, block");
 }
 
 static int sceKernelAllocHeapMemoryWithOption(int heapId, u32 memSize, u32 paramsPtr) {
 	u32 error;
 	KernelHeap* heap = kernelObjects.Get<KernelHeap>(heapId, error);
 	if (!heap)
-		return hleLogError(SCEKERNEL, error, "sceKernelFreeHeapMemory(%d): invalid heapId", heapId);
+		return hleLogError(Log::sceKernel, error, "invalid heapId");
 	u32 grain = 4;
 	// 0 is ignored.
 	if (paramsPtr != 0) {
 		u32 size = Memory::Read_U32(paramsPtr);
 		if (size < 8)
-			return hleLogError(SCEKERNEL, 0, "invalid param size");
+			return hleLogError(Log::sceKernel, 0, "invalid param size");
 		if (size > 8)
-			WARN_LOG(HLE, "sceKernelAllocHeapMemoryWithOption(): unexpected param size %d", size);
+			WARN_LOG(Log::HLE, "sceKernelAllocHeapMemoryWithOption(): unexpected param size %d", size);
 		grain = Memory::Read_U32(paramsPtr + 4);
 	}
-	INFO_LOG(HLE, "sceKernelAllocHeapMemoryWithOption(%08x, %08x, %08x)", heapId, memSize, paramsPtr);
+	INFO_LOG(Log::HLE, "sceKernelAllocHeapMemoryWithOption(%08x, %08x, %08x)", heapId, memSize, paramsPtr);
 	// There's 8 bytes at the end of every block, reserved.
 	memSize += 8;
 	u32 addr = heap->alloc.AllocAligned(memSize, grain, grain, true);
@@ -165,9 +166,9 @@ const HLEFunction SysMemForKernel[] = {
 	{ 0x9697CD32, &WrapU_I<sceKernelPartitionTotalFreeMemSize>,    "sceKernelPartitionTotalFreeMemSize", 'x', "i" ,    HLE_KERNEL_SYSCALL },
 	{ 0xE6581468, &WrapU_I<sceKernelPartitionMaxFreeMemSize>,      "sceKernelPartitionMaxFreeMemSize",   'x', "i" ,    HLE_KERNEL_SYSCALL },
 	{ 0X3FC9AE6A, &WrapU_V<sceKernelDevkitVersion>,                "sceKernelDevkitVersion",             'x', "" ,     HLE_KERNEL_SYSCALL },
-	{ 0X536AD5E1, &WrapU_V<SysMemForKernel_536AD5E1>,              "SysMemForKernel_536AD5E1",           'i', "i" ,    HLE_KERNEL_SYSCALL },
+	{ 0X536AD5E1, &WrapU_V<sceKernelGetUidmanCB>,                  "sceKernelGetUidmanCB",               'i', "i" ,    HLE_KERNEL_SYSCALL },
 	{ 0X7B749390, &WrapI_IU<sceKernelFreeHeapMemory>,              "sceKernelFreeHeapMemory",            'i', "ix" ,   HLE_KERNEL_SYSCALL },
-	{ 0XEB7A74DB , &WrapI_IUU<sceKernelAllocHeapMemoryWithOption>, "sceKernelAllocHeapMemoryWithOption", 'i', "ixp" ,  HLE_KERNEL_SYSCALL },
+	{ 0XEB7A74DB, &WrapI_IUU<sceKernelAllocHeapMemoryWithOption>,  "sceKernelAllocHeapMemoryWithOption", 'i', "ixp" ,  HLE_KERNEL_SYSCALL },
 };
 
 void Register_SysMemForKernel() {

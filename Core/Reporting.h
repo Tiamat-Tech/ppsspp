@@ -19,6 +19,7 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
 
 #include "Common/CommonTypes.h"
 #include "Common/File/Path.h"
@@ -52,7 +53,7 @@ namespace Reporting
 
 	// Set the current enabled state of the reporting system and desired reporting server host.
 	// Returns if anything was changed.
-	bool Enable(bool flag, std::string host);
+	bool Enable(bool flag, const std::string &host);
 
 	// Use the default reporting setting (per compiled settings) of host and enabled state.
 	void EnableDefault();

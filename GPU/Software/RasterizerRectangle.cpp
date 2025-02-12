@@ -1,38 +1,23 @@
 // See comment in header for the purpose of the code in this file.
 
 #include "ppsspp_config.h"
-#include <algorithm>
 #include <cmath>
 
 #include "Common/Common.h"
 #include "Common/Data/Convert/ColorConv.h"
 #include "Common/Profiler/Profiler.h"
-#include "Common/StringUtils.h"
 
 #include "Core/Config.h"
 #include "Core/Debugger/MemBlockInfo.h"
-#include "Core/MemMap.h"
 #include "Core/System.h"
 #include "GPU/GPUState.h"
 
-#include "GPU/Common/TextureCacheCommon.h"
 #include "GPU/Software/BinManager.h"
 #include "GPU/Software/DrawPixel.h"
 #include "GPU/Software/Rasterizer.h"
 #include "GPU/Software/Sampler.h"
 #include "GPU/Software/SoftGpu.h"
-
-#if defined(_M_SSE)
-#include <emmintrin.h>
-#endif
-
-#if PPSSPP_ARCH(ARM_NEON)
-#if defined(_MSC_VER) && PPSSPP_ARCH(ARM64)
-#include <arm64_neon.h>
-#else
-#include <arm_neon.h>
-#endif
-#endif
+#include "Common/Math/SIMDHeaders.h"
 
 extern DSStretch g_DarkStalkerStretch;
 // For Darkstalkers hack. Ugh.
@@ -101,7 +86,6 @@ template <GEBufferFormat fmt, bool alphaBlend>
 static inline void DrawSinglePixel(u16 *pixel, const u32 color_in) {
 	u32 new_color;
 	// Because of this check, we only support src.a / 1-src.a blending.
-	// We take advantage of short circuiting by checking the constant (template) value first.
 	if (!alphaBlend || (color_in >> 24) == 255) {
 		new_color = color_in & 0xFFFFFF;
 	} else {
@@ -142,7 +126,7 @@ template <bool alphaBlend>
 static inline void DrawSinglePixel32(u32 *pixel, const u32 color_in) {
 	u32 new_color;
 	// Because of this check, we only support src.a / 1-src.a blending.
-	if ((color_in >> 24) == 255 || !alphaBlend) {
+	if (!alphaBlend || (color_in >> 24) == 255) {
 		new_color = color_in & 0xFFFFFF;
 	} else {
 		const u32 old_color = *pixel;
@@ -231,7 +215,7 @@ static inline Vec4IntResult SOFTRAST_CALL ModulateRGBA(Vec4IntArg prim_in, Vec4I
 	return ToVec4IntResult(out);
 }
 
-template <GEBufferFormat fmt, bool isWhite, bool alphaBlend>
+template <GEBufferFormat fmt, bool isWhite, bool alphaBlend, bool alphaTestZero>
 static void DrawSpriteTex(const DrawingCoords &pos0, const DrawingCoords &pos1, int s_start, int t_start, int ds, int dt, u32 color0, const RasterizerState &state, Sampler::FetchFunc fetchFunc) {
 	const u8 *texptr = state.texptr[0];
 	uint16_t texbufw = state.texbufw[0];
@@ -245,7 +229,7 @@ static void DrawSpriteTex(const DrawingCoords &pos0, const DrawingCoords &pos1, 
 		for (int x = pos0.x; x < pos1.x; x++) {
 			Vec4<int> tex_color = fetchFunc(s, t, texptr, texbufw, 0, state.samplerID);
 			if (isWhite) {
-				if (!alphaBlend || tex_color.a() != 0) {
+				if (!alphaTestZero || tex_color.a() != 0) {
 					u32 tex_color32 = tex_color.ToRGBA();
 					if (fmt == GE_FORMAT_8888)
 						DrawSinglePixel32<alphaBlend>(pixel32, tex_color32);
@@ -255,7 +239,7 @@ static void DrawSpriteTex(const DrawingCoords &pos0, const DrawingCoords &pos1, 
 			} else {
 				Vec4<int> prim_color = c0;
 				prim_color = Vec4<int>(ModulateRGBA(ToVec4IntArg(prim_color), ToVec4IntArg(tex_color), state.samplerID));
-				if (!alphaBlend || prim_color.a() > 0) {
+				if (!alphaTestZero || prim_color.a() > 0) {
 					if (fmt == GE_FORMAT_8888)
 						DrawSinglePixel32<alphaBlend>(pixel32, prim_color.ToRGBA());
 					else
@@ -272,20 +256,20 @@ static void DrawSpriteTex(const DrawingCoords &pos0, const DrawingCoords &pos1, 
 	}
 }
 
-template <bool isWhite, bool alphaBlend>
+template <bool isWhite, bool alphaBlend, bool alphaTestZero>
 static void DrawSpriteTex(const DrawingCoords &pos0, const DrawingCoords &pos1, int s_start, int t_start, int ds, int dt, u32 color0, const RasterizerState &state, Sampler::FetchFunc fetchFunc) {
 	switch (state.pixelID.FBFormat()) {
 	case GE_FORMAT_565:
-		DrawSpriteTex<GE_FORMAT_565, isWhite, alphaBlend>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
+		DrawSpriteTex<GE_FORMAT_565, isWhite, alphaBlend, alphaTestZero>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
 		break;
 	case GE_FORMAT_5551:
-		DrawSpriteTex<GE_FORMAT_5551, isWhite, alphaBlend>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
+		DrawSpriteTex<GE_FORMAT_5551, isWhite, alphaBlend, alphaTestZero>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
 		break;
 	case GE_FORMAT_4444:
-		DrawSpriteTex<GE_FORMAT_4444, isWhite, alphaBlend>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
+		DrawSpriteTex<GE_FORMAT_4444, isWhite, alphaBlend, alphaTestZero>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
 		break;
 	case GE_FORMAT_8888:
-		DrawSpriteTex<GE_FORMAT_8888, isWhite, alphaBlend>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
+		DrawSpriteTex<GE_FORMAT_8888, isWhite, alphaBlend, alphaTestZero>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
 		break;
 	default:
 		// Invalid, don't draw anything...
@@ -293,10 +277,22 @@ static void DrawSpriteTex(const DrawingCoords &pos0, const DrawingCoords &pos1, 
 	}
 }
 
+template <bool isWhite>
+static inline void DrawSpriteTex(const DrawingCoords &pos0, const DrawingCoords &pos1, int s_start, int t_start, int ds, int dt, u32 color0, const RasterizerState &state, Sampler::FetchFunc fetchFunc) {
+	// Standard alpha blending implies skipping alpha zero.
+	if (state.pixelID.alphaBlend)
+		DrawSpriteTex<isWhite, true, true>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
+	else if (state.pixelID.AlphaTestFunc() != GE_COMP_ALWAYS)
+		DrawSpriteTex<isWhite, false, true>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
+	else
+		DrawSpriteTex<isWhite, false, false>(pos0, pos1, s_start, t_start, ds, dt, color0, state, fetchFunc);
+}
+
 template <GEBufferFormat fmt, bool alphaBlend>
 static void DrawSpriteNoTex(const DrawingCoords &pos0, const DrawingCoords &pos1, u32 color0, const RasterizerState &state) {
-	if (alphaBlend && Vec4<int>::FromRGBA(color0).a() == 0)
-		return;
+	if constexpr (alphaBlend)
+		if (Vec4<int>::FromRGBA(color0).a() == 0)
+			return;
 
 	for (int y = pos0.y; y < pos1.y; y++) {
 		if (fmt == GE_FORMAT_8888) {
@@ -393,15 +389,9 @@ void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &ran
 
 		if (UseDrawSinglePixel(pixelID) && (samplerID.TexFunc() == GE_TEXFUNC_MODULATE || samplerID.TexFunc() == GE_TEXFUNC_REPLACE) && samplerID.useTextureAlpha) {
 			if (isWhite || samplerID.TexFunc() == GE_TEXFUNC_REPLACE) {
-				if (pixelID.alphaBlend)
-					DrawSpriteTex<true, true>(pos0, pos1, s_start, t_start, ds, dt, v1.color0, state, fetchFunc);
-				else
-					DrawSpriteTex<true, false>(pos0, pos1, s_start, t_start, ds, dt, v1.color0, state, fetchFunc);
+				DrawSpriteTex<true>(pos0, pos1, s_start, t_start, ds, dt, v1.color0, state, fetchFunc);
 			} else {
-				if (pixelID.alphaBlend)
-					DrawSpriteTex<false, true>(pos0, pos1, s_start, t_start, ds, dt, v1.color0, state, fetchFunc);
-				else
-					DrawSpriteTex<false, false>(pos0, pos1, s_start, t_start, ds, dt, v1.color0, state, fetchFunc);
+				DrawSpriteTex<false>(pos0, pos1, s_start, t_start, ds, dt, v1.color0, state, fetchFunc);
 			}
 		} else {
 			float dsf = ds * (1.0f / (float)(1 << state.samplerID.width0Shift));

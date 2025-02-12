@@ -20,7 +20,9 @@
 #include <cstdint>
 #include <unordered_set>
 #include <mutex>
+#include <sstream>
 
+#include "Common/StringUtils.h"
 #include "Common/MachineContext.h"
 
 #if PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
@@ -38,6 +40,12 @@
 #include "Core/MemFault.h"
 #include "Core/MemMap.h"
 #include "Core/MIPS/JitCommon/JitCommon.h"
+#include "Core/Debugger/SymbolMap.h"
+
+// Stack walking stuff
+#include "Core/MIPS/MIPSStackWalk.h"
+#include "Core/MIPS/MIPSDebugInterface.h"
+#include "Core/HLE/sceKernelThread.h"
 
 namespace Memory {
 
@@ -111,6 +119,8 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 	bool inJitSpace = MIPSComp::jit && MIPSComp::jit->CodeInRange(codePtr);
 	if (!inJitSpace) {
 		// This is a crash in non-jitted code. Not something we want to handle here, ignore.
+		// Actually, we could handle crashes from the IR interpreter here, although recovering the call stack
+		// might be tricky...
 		inCrashHandler = false;
 		return false;
 	}
@@ -132,8 +142,7 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 		}
 	}
 
-
-	// OK, a guest executable did a bad access. Take care of it.
+	// OK, a guest executable did a bad access. Let's handle it.
 
 	uint32_t guestAddress = invalidHostAddress ? 0xFFFFFFFFUL : (uint32_t)(hostAddress - baseAddress);
 
@@ -142,19 +151,6 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 	bool success = false;
 
 	MemoryExceptionType type = MemoryExceptionType::NONE;
-
-	std::string infoString = "";
-
-	bool isAtDispatch = false;
-	if (MIPSComp::jit) {
-		std::string desc;
-		if (MIPSComp::jit->DescribeCodePtr(codePtr, desc)) {
-			infoString += desc + "\n";
-		}
-		if (MIPSComp::jit->IsAtDispatchFetch(codePtr)) {
-			isAtDispatch = true;
-		}
-	}
 
 	int instructionSize = 4;
 #if PPSSPP_ARCH(AMD64) || PPSSPP_ARCH(X86)
@@ -242,12 +238,7 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 	}
 #endif
 
-	std::string disassembly;
-	if (DisassembleNativeAt(codePtr, instructionSize, &disassembly)) {
-		infoString += disassembly + "\n";
-	}
-
-	if (isAtDispatch) {
+	if (MIPSComp::jit && MIPSComp::jit->IsAtDispatchFetch(codePtr)) {
 		u32 targetAddr = currentMIPS->pc;  // bad approximation
 		// TODO: Do the other archs and platforms.
 #if PPSSPP_ARCH(AMD64) && PPSSPP_PLATFORM(WINDOWS)
@@ -256,10 +247,15 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 #endif
 		Core_ExecException(targetAddr, currentMIPS->pc, ExecExceptionType::JUMP);
 		// Redirect execution to a crash handler that will switch to CoreState::CORE_RUNTIME_ERROR immediately.
-		context->CTX_PC = (uintptr_t)MIPSComp::jit->GetCrashHandler();
-		ERROR_LOG(MEMMAP, "Bad execution access detected, halting: %08x (last known pc %08x, host: %p)", targetAddr, currentMIPS->pc, (void *)hostAddress);
-		inCrashHandler = false;
-		return true;
+		uintptr_t crashHandler = (uintptr_t)MIPSComp::jit->GetCrashHandler();
+		if (crashHandler != 0) {
+			context->CTX_PC = crashHandler;
+			ERROR_LOG(Log::MemMap, "Bad execution access detected, halting: %08x (last known pc %08x, host: %p)", targetAddr, currentMIPS->pc, (void *)hostAddress);
+			inCrashHandler = false;
+			return true;
+		}
+
+		type = MemoryExceptionType::UNKNOWN;
 	} else if (success) {
 		if (info.isMemoryWrite) {
 			type = MemoryExceptionType::WRITE_WORD;
@@ -282,9 +278,19 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 		context->CTX_PC += info.instructionSize;
 		g_numReportedBadAccesses++;
 		if (g_numReportedBadAccesses < 100) {
-			ERROR_LOG(MEMMAP, "Bad memory access detected and ignored: %08x (%p)", guestAddress, (void *)hostAddress);
+			ERROR_LOG(Log::MemMap, "Bad memory access detected and ignored: %08x (%p)", guestAddress, (void *)hostAddress);
 		}
 	} else {
+		std::string infoString = "";
+		std::string temp;
+		if (MIPSComp::jit && MIPSComp::jit->DescribeCodePtr(codePtr, temp)) {
+			infoString += temp + "\n";
+		}
+		temp.clear();
+		if (DisassembleNativeAt(codePtr, instructionSize, &temp)) {
+			infoString += temp + "\n";
+		}
+
 		// Either bIgnoreBadMemAccess is off, or we failed recovery analysis.
 		// We can't ignore this memory access.
 		uint32_t approximatePC = currentMIPS->pc;
@@ -296,11 +302,14 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 		g_lastCrashAddress = codePtr;
 
 		// Redirect execution to a crash handler that will switch to CoreState::CORE_RUNTIME_ERROR immediately.
+		uintptr_t crashHandler = 0;
 		if (MIPSComp::jit)
-			context->CTX_PC = (uintptr_t)MIPSComp::jit->GetCrashHandler();
+			crashHandler = (uintptr_t)MIPSComp::jit->GetCrashHandler();
+		if (crashHandler != 0)
+			context->CTX_PC = crashHandler;
 		else
 			handled = false;
-		ERROR_LOG(MEMMAP, "Bad memory access detected! %08x (%p) Stopping emulation. Info:\n%s", guestAddress, (void *)hostAddress, infoString.c_str());
+		ERROR_LOG(Log::MemMap, "Bad memory access detected! %08x (%p) Stopping emulation. Info:\n%s", guestAddress, (void *)hostAddress, infoString.c_str());
 	}
 
 	inCrashHandler = false;
@@ -310,10 +319,38 @@ bool HandleFault(uintptr_t hostAddress, void *ctx) {
 #else
 
 bool HandleFault(uintptr_t hostAddress, void *ctx) {
-	ERROR_LOG(MEMMAP, "Exception handling not supported");
+	ERROR_LOG(Log::MemMap, "Exception handling not supported");
 	return false;
 }
 
 #endif
 
 }  // namespace Memory
+
+std::vector<MIPSStackWalk::StackFrame> WalkCurrentStack(int threadID) {
+	DebugInterface *cpuDebug = currentDebugMIPS;
+
+	auto threads = GetThreadsInfo();
+	uint32_t entry = cpuDebug->GetPC();
+	uint32_t stackTop = 0;
+	for (const DebugThreadInfo &th : threads) {
+		if ((threadID == -1 && th.isCurrent) || th.id == threadID) {
+			entry = th.entrypoint;
+			stackTop = th.initialStack;
+			break;
+		}
+	}
+
+	uint32_t ra = cpuDebug->GetRegValue(0, MIPS_REG_RA);
+	uint32_t sp = cpuDebug->GetRegValue(0, MIPS_REG_SP);
+	return MIPSStackWalk::Walk(cpuDebug->GetPC(), ra, sp, entry, stackTop);
+}
+
+std::string FormatStackTrace(const std::vector<MIPSStackWalk::StackFrame> &frames) {
+	std::stringstream str;
+	for (const auto &frame : frames) {
+		std::string desc = g_symbolMap->GetDescription(frame.entry);
+		str << StringFromFormat("%s (%08x+%03x, pc: %08x sp: %08x)\n", desc.c_str(), frame.entry, frame.pc - frame.entry, frame.pc, frame.sp);
+	}
+	return str.str();
+}

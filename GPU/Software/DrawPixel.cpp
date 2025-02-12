@@ -20,7 +20,6 @@
 #include "Common/Common.h"
 #include "Common/Data/Convert/ColorConv.h"
 #include "Core/Config.h"
-#include "GPU/GPUState.h"
 #include "GPU/Software/BinManager.h"
 #include "GPU/Software/DrawPixel.h"
 #include "GPU/Software/FuncId.h"
@@ -802,10 +801,12 @@ SingleFunc PixelJitCache::GenericSingle(const PixelFuncID &id) {
 }
 
 thread_local PixelJitCache::LastCache PixelJitCache::lastSingle_;
+int PixelJitCache::clearGen_ = 0;
 
 // 256k should be plenty of space for plenty of variations.
 PixelJitCache::PixelJitCache() : CodeBlock(1024 * 64 * 4), cache_(64) {
 	lastSingle_.gen = -1;
+	clearGen_++;
 }
 
 void PixelJitCache::Clear() {
@@ -842,7 +843,7 @@ void PixelJitCache::Flush() {
 	for (const auto &queued : compileQueue_) {
 		// Might've been compiled after enqueue, but before now.
 		size_t queuedKey = std::hash<PixelFuncID>()(queued);
-		if (!cache_.Get(queuedKey))
+		if (!cache_.ContainsKey(queuedKey))
 			Compile(queued);
 	}
 	compileQueue_.clear();
@@ -857,10 +858,10 @@ SingleFunc PixelJitCache::GetSingle(const PixelFuncID &id, BinManager *binner) {
 		return lastSingle_.func;
 
 	std::unique_lock<std::mutex> guard(jitCacheLock);
-	auto it = cache_.Get(key);
-	if (it != nullptr) {
-		lastSingle_.Set(key, it, clearGen_);
-		return it;
+	SingleFunc singleFunc;
+	if (cache_.Get(key, &singleFunc)) {
+		lastSingle_.Set(key, singleFunc, clearGen_);
+		return singleFunc;
 	}
 
 	if (!binner) {
@@ -876,18 +877,21 @@ SingleFunc PixelJitCache::GetSingle(const PixelFuncID &id, BinManager *binner) {
 	for (const auto &queued : compileQueue_) {
 		// Might've been compiled after enqueue, but before now.
 		size_t queuedKey = std::hash<PixelFuncID>()(queued);
-		if (!cache_.Get(queuedKey))
+		if (!cache_.ContainsKey(queuedKey))
 			Compile(queued);
 	}
 	compileQueue_.clear();
 
 	// Might've been in the queue.
-	if (!cache_.Get(key))
+	if (!cache_.ContainsKey(key))
 		Compile(id);
 
-	it = cache_.Get(key);
-	lastSingle_.Set(key, it, clearGen_);
-	return it;
+	if (cache_.Get(key, &singleFunc)) {
+		lastSingle_.Set(key, singleFunc, clearGen_);
+		return singleFunc;
+	} else {
+		return nullptr;
+	}
 }
 
 void PixelJitCache::Compile(const PixelFuncID &id) {

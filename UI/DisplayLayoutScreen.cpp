@@ -50,10 +50,10 @@ enum Mode {
 
 static Bounds FRectToBounds(FRect rc) {
 	Bounds b;
-	b.x = rc.x * g_dpi_scale_x;
-	b.y = rc.y * g_dpi_scale_y;
-	b.w = rc.w * g_dpi_scale_x;
-	b.h = rc.h * g_dpi_scale_y;
+	b.x = rc.x * g_display.dpi_scale_x;
+	b.y = rc.y * g_display.dpi_scale_y;
+	b.w = rc.w * g_display.dpi_scale_x;
+	b.h = rc.h * g_display.dpi_scale_y;
 	return b;
 }
 
@@ -117,27 +117,24 @@ private:
 	float startDisplayOffsetY_ = -1.0f;
 };
 
-DisplayLayoutScreen::DisplayLayoutScreen(const Path &filename) : UIDialogScreenWithGameBackground(filename) {
-	// Show background at full brightness
-	darkenGameBackground_ = false;
-	forceTransparent_ = true;
-}
+DisplayLayoutScreen::DisplayLayoutScreen(const Path &filename) : UIDialogScreenWithGameBackground(filename) {}
 
 void DisplayLayoutScreen::DrawBackground(UIContext &dc) {
 	if (PSP_IsInited() && !g_Config.bSkipBufferEffects) {
-		// We normally rely on the PSP screen.
-		UIDialogScreenWithGameBackground::DrawBackground(dc);
+		// We normally rely on the PSP screen showing through.
 	} else {
 		// But if it's not present (we're not in game, or skip buffer effects is used),
 		// we have to draw a substitute ourselves.
+		UIContext &dc = *screenManager()->getUIContext();
 
 		// TODO: Clean this up a bit, this GetScreenFrame/CenterDisplay combo is too common.
-		FRect screenFrame = GetScreenFrame(pixel_xres, pixel_yres);
+		FRect screenFrame = GetScreenFrame(g_display.pixel_xres, g_display.pixel_yres);
 		FRect rc;
-		CenterDisplayOutputRect(&rc, 480.0f, 272.0f, screenFrame, g_Config.iInternalScreenRotation);
+		CalculateDisplayOutputRect(&rc, 480.0f, 272.0f, screenFrame, g_Config.iInternalScreenRotation);
 
 		dc.Flush();
 		ImageID bg = ImageID("I_PSP_DISPLAY");
+		dc.Draw()->DrawImageStretch(bg, dc.GetBounds(), 0x7F000000);
 		dc.Draw()->DrawImageStretch(bg, FRectToBounds(rc), 0x7FFFFFFF);
 	}
 }
@@ -150,40 +147,43 @@ void DisplayLayoutScreen::dialogFinished(const Screen *dialog, DialogResult resu
 	RecreateViews();
 }
 
-UI::EventReturn DisplayLayoutScreen::OnPostProcShaderChange(UI::EventParams &e) {
-	// Remove the virtual "Off" entry. TODO: Get rid of it generally.
-	g_Config.vPostShaderNames.erase(std::remove(g_Config.vPostShaderNames.begin(), g_Config.vPostShaderNames.end(), "Off"), g_Config.vPostShaderNames.end());
-	FixPostShaderOrder(&g_Config.vPostShaderNames);
-
-	NativeMessageReceived("gpu_configChanged", "");
-	NativeMessageReceived("gpu_renderResized", "");  // To deal with shaders that can change render resolution like upscaling.
-	NativeMessageReceived("postshader_updated", "");
+static void NotifyPostChanges() {
+	System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
+	System_PostUIMessage(UIMessage::GPU_RENDER_RESIZED);  // To deal with shaders that can change render resolution like upscaling.
+	System_PostUIMessage(UIMessage::POSTSHADER_UPDATED);
 
 	if (gpu) {
 		gpu->NotifyConfigChanged();
 	}
+}
+
+UI::EventReturn DisplayLayoutScreen::OnPostProcShaderChange(UI::EventParams &e) {
+	// Remove the virtual "Off" entry. TODO: Get rid of it generally.
+	g_Config.vPostShaderNames.erase(std::remove(g_Config.vPostShaderNames.begin(), g_Config.vPostShaderNames.end(), "Off"), g_Config.vPostShaderNames.end());
+	FixPostShaderOrder(&g_Config.vPostShaderNames);
+	NotifyPostChanges();
 	return UI::EVENT_DONE;
 }
 
-static std::string PostShaderTranslateName(const char *value) {
-	auto gr = GetI18NCategory("Graphics");
-	auto ps = GetI18NCategory("PostShaders");
-	if (!strcmp(value, "Off")) {
+static std::string PostShaderTranslateName(std::string_view value) {
+	if (value == "Off") {
+		auto gr = GetI18NCategory(I18NCat::GRAPHICS);
 		// Off is a legacy fake item (gonna migrate off it later).
-		return gr->T("Add postprocessing shader");
+		return std::string(gr->T("Add postprocessing shader"));
 	}
 
 	const ShaderInfo *info = GetPostShaderInfo(value);
 	if (info) {
-		return ps->T(value, info ? info->name.c_str() : value);
+		auto ps = GetI18NCategory(I18NCat::POSTSHADERS);
+		return std::string(ps->T(value, info->name));
 	} else {
-		return value;
+		return std::string(value);
 	}
 }
 
-void DisplayLayoutScreen::sendMessage(const char *message, const char *value) {
+void DisplayLayoutScreen::sendMessage(UIMessage message, const char *value) {
 	UIDialogScreenWithGameBackground::sendMessage(message, value);
-	if (!strcmp(message, "postshader_updated")) {
+	if (message == UIMessage::POSTSHADER_UPDATED) {
 		g_Config.bShaderChainRequires60FPS = PostShaderChainRequires60FPS(GetFullPostShadersChain(g_Config.vPostShaderNames));
 		RecreateViews();
 	}
@@ -194,10 +194,10 @@ void DisplayLayoutScreen::CreateViews() {
 
 	using namespace UI;
 
-	auto di = GetI18NCategory("Dialog");
-	auto gr = GetI18NCategory("Graphics");
-	auto co = GetI18NCategory("Controls");
-	auto ps = GetI18NCategory("PostShaders");
+	auto di = GetI18NCategory(I18NCat::DIALOG);
+	auto gr = GetI18NCategory(I18NCat::GRAPHICS);
+	auto co = GetI18NCategory(I18NCat::CONTROLS);
+	auto ps = GetI18NCategory(I18NCat::POSTSHADERS);
 
 	root_ = new AnchorLayout(new LayoutParams(FILL_PARENT, FILL_PARENT));
 
@@ -241,13 +241,18 @@ void DisplayLayoutScreen::CreateViews() {
 
 	if (!IsVREnabled()) {
 		auto stretch = new CheckBox(&g_Config.bDisplayStretch, gr->T("Stretch"));
+		stretch->SetDisabledPtr(&g_Config.bDisplayIntegerScale);
 		rightColumn->Add(stretch);
 
-		PopupSliderChoiceFloat *aspectRatio = new PopupSliderChoiceFloat(&g_Config.fDisplayAspectRatio, 0.5f, 2.0f, gr->T("Aspect Ratio"), screenManager());
+		PopupSliderChoiceFloat *aspectRatio = new PopupSliderChoiceFloat(&g_Config.fDisplayAspectRatio, 0.1f, 2.0f, 1.0f, gr->T("Aspect Ratio"), screenManager());
 		rightColumn->Add(aspectRatio);
-		aspectRatio->SetDisabledPtr(&g_Config.bDisplayStretch);
+		aspectRatio->SetEnabledFunc([]() {
+			return !g_Config.bDisplayStretch && !g_Config.bDisplayIntegerScale;
+		});
 		aspectRatio->SetHasDropShadow(false);
 		aspectRatio->SetLiveUpdate(true);
+
+		rightColumn->Add(new CheckBox(&g_Config.bDisplayIntegerScale, gr->T("Integer scale factor")));
 
 #if PPSSPP_PLATFORM(ANDROID)
 		// Hide insets option if no insets, or OS too old.
@@ -268,10 +273,11 @@ void DisplayLayoutScreen::CreateViews() {
 		bottomControls->Add(mode_);
 
 		static const char *displayRotation[] = { "Landscape", "Portrait", "Landscape Reversed", "Portrait Reversed" };
-		auto rotation = new PopupMultiChoice(&g_Config.iInternalScreenRotation, gr->T("Rotation"), displayRotation, 1, ARRAY_SIZE(displayRotation), co->GetName(), screenManager());
+		auto rotation = new PopupMultiChoice(&g_Config.iInternalScreenRotation, gr->T("Rotation"), displayRotation, 1, ARRAY_SIZE(displayRotation), I18NCat::CONTROLS, screenManager());
 		rotation->SetEnabledFunc([] {
 			return !g_Config.bSkipBufferEffects || g_Config.bSoftwareRendering;
 		});
+		rotation->SetHideTitle(true);
 		rightColumn->Add(rotation);
 
 		Choice *center = new Choice(di->T("Reset"));
@@ -295,8 +301,10 @@ void DisplayLayoutScreen::CreateViews() {
 		leftColumn->Add(new Spacer(24.0f));
 	}
 
-	static const char *bufFilters[] = { "Linear", "Nearest", };
-	leftColumn->Add(new PopupMultiChoice(&g_Config.iBufFilter, gr->T("Screen Scaling Filter"), bufFilters, 1, ARRAY_SIZE(bufFilters), gr->GetName(), screenManager()));
+	if (!IsVREnabled()) {
+		static const char *bufFilters[] = { "Linear", "Nearest", };
+		leftColumn->Add(new PopupMultiChoice(&g_Config.iDisplayFilter, gr->T("Screen Scaling Filter"), bufFilters, 1, ARRAY_SIZE(bufFilters), I18NCat::GRAPHICS, screenManager()));
+	}
 
 	Draw::DrawContext *draw = screenManager()->getDrawContext();
 
@@ -337,7 +345,7 @@ void DisplayLayoutScreen::CreateViews() {
 			postProcChoice_ = shaderRow->Add(new Choice(ImageID("I_PLUS")));
 		}
 		postProcChoice_->OnClick.Add([=](EventParams &e) {
-			auto gr = GetI18NCategory("Graphics");
+			auto gr = GetI18NCategory(I18NCat::GRAPHICS);
 			auto procScreen = new PostProcScreen(gr->T("Postprocessing shaders"), i, false);
 			procScreen->SetHasDropShadow(false);
 			procScreen->OnChoice.Handle(this, &DisplayLayoutScreen::OnPostProcShaderChange);
@@ -373,15 +381,24 @@ void DisplayLayoutScreen::CreateViews() {
 
 			auto removeButton = shaderRow->Add(new Choice(ImageID("I_TRASHCAN"), new LinearLayoutParams(0.0f)));
 			removeButton->OnClick.Add([=](EventParams &e) -> UI::EventReturn {
-				g_Config.vPostShaderNames.erase(g_Config.vPostShaderNames.begin() + i);
-				NativeMessageReceived("gpu_configChanged", "");
-				RecreateViews();
+				// Protect against possible race conditions.
+				if (i < g_Config.vPostShaderNames.size()) {
+					g_Config.vPostShaderNames.erase(g_Config.vPostShaderNames.begin() + i);
+					FixPostShaderOrder(&g_Config.vPostShaderNames);
+					NotifyPostChanges();
+					RecreateViews();
+				}
 				return UI::EVENT_DONE;
 			});
 
 			auto moreButton = shaderRow->Add(new Choice(ImageID("I_THREE_DOTS"), new LinearLayoutParams(0.0f)));
 			moreButton->OnClick.Add([=](EventParams &e) -> UI::EventReturn {
-				PopupContextMenuScreen *contextMenu = new UI::PopupContextMenuScreen(postShaderContextMenu, ARRAY_SIZE(postShaderContextMenu), di.get(), moreButton);
+				if (i >= g_Config.vPostShaderNames.size()) {
+					// Protect against possible race conditions.
+					return UI::EVENT_DONE;
+				}
+
+				PopupContextMenuScreen *contextMenu = new UI::PopupContextMenuScreen(postShaderContextMenu, ARRAY_SIZE(postShaderContextMenu), I18NCat::DIALOG, moreButton);
 				screenManager()->push(contextMenu);
 				const ShaderInfo *info = GetPostShaderInfo(g_Config.vPostShaderNames[i]);
 				bool usesLastFrame = info ? info->usePreviousFrame : false;
@@ -402,7 +419,7 @@ void DisplayLayoutScreen::CreateViews() {
 						return UI::EVENT_DONE;
 					}
 					FixPostShaderOrder(&g_Config.vPostShaderNames);
-					NativeMessageReceived("gpu_configChanged", "");
+					NotifyPostChanges();
 					RecreateViews();
 					return UI::EVENT_DONE;
 				});
@@ -437,11 +454,11 @@ void DisplayLayoutScreen::CreateViews() {
 						value = setting.value;
 
 					if (duplicated) {
-						auto sliderName = StringFromFormat("%s %s", ps->T(setting.name), ps->T("(duplicated setting, previous slider will be used)"));
-						PopupSliderChoiceFloat *settingValue = settingContainer->Add(new PopupSliderChoiceFloat(&value, setting.minValue, setting.maxValue, sliderName, setting.step, screenManager()));
+						auto sliderName = StringFromFormat("%s %s", ps->T_cstr(setting.name.c_str()), ps->T_cstr("(duplicated setting, previous slider will be used)"));
+						PopupSliderChoiceFloat *settingValue = settingContainer->Add(new PopupSliderChoiceFloat(&value, setting.minValue, setting.maxValue, setting.value, sliderName, setting.step, screenManager()));
 						settingValue->SetEnabled(false);
 					} else {
-						PopupSliderChoiceFloat *settingValue = settingContainer->Add(new PopupSliderChoiceFloat(&value, setting.minValue, setting.maxValue, ps->T(setting.name), setting.step, screenManager()));
+						PopupSliderChoiceFloat *settingValue = settingContainer->Add(new PopupSliderChoiceFloat(&value, setting.minValue, setting.maxValue, setting.value, ps->T(setting.name), setting.step, screenManager()));
 						settingValue->SetLiveUpdate(true);
 						settingValue->SetHasDropShadow(false);
 						settingValue->SetEnabledFunc([=] {
@@ -457,7 +474,7 @@ void DisplayLayoutScreen::CreateViews() {
 }
 
 void PostProcScreen::CreateViews() {
-	auto ps = GetI18NCategory("PostShaders");
+	auto ps = GetI18NCategory(I18NCat::POSTSHADERS);
 	ReloadAllPostShaderInfo(screenManager()->getDrawContext());
 	shaders_ = GetAllPostShaderInfo();
 	std::vector<std::string> items;
@@ -471,7 +488,7 @@ void PostProcScreen::CreateViews() {
 			continue;
 		if (shaders_[i].section == selectedName)
 			selected = (int)indexTranslation_.size();
-		items.push_back(ps->T(shaders_[i].section.c_str(), shaders_[i].name.c_str()));
+		items.push_back(std::string(ps->T(shaders_[i].section.c_str(), shaders_[i].name.c_str())));
 		indexTranslation_.push_back(i);
 	}
 	adaptor_ = UI::StringVectorListAdaptor(items, selected);
@@ -486,18 +503,17 @@ void PostProcScreen::OnCompleted(DialogResult result) {
 	if (showStereoShaders_) {
 		if (g_Config.sStereoToMonoShader != value) {
 			g_Config.sStereoToMonoShader = value;
-			NativeMessageReceived("gpu_configChanged", "");
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
 		}
 	} else {
 		if (id_ < (int)g_Config.vPostShaderNames.size()) {
 			if (g_Config.vPostShaderNames[id_] != value) {
 				g_Config.vPostShaderNames[id_] = value;
-				NativeMessageReceived("gpu_configChanged", "");
+				System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
 			}
-		}
-		else {
+		} else {
 			g_Config.vPostShaderNames.push_back(value);
-			NativeMessageReceived("gpu_configChanged", "");
+			System_PostUIMessage(UIMessage::GPU_CONFIG_CHANGED);
 		}
 	}
 }

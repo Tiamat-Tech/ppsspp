@@ -33,7 +33,7 @@
     <ClInclude Include="GPUState.h">
       <Filter>Common</Filter>
     </ClInclude>
-    <ClInclude Include="GPUInterface.h">
+    <ClInclude Include="GPUDefinitions.h">
       <Filter>Common</Filter>
     </ClInclude>
     <ClInclude Include="GPUCommon.h">
@@ -262,6 +262,24 @@
       <Filter>Debugger</Filter>
     </ClInclude>
     <ClInclude Include="Common\GeometryShaderGenerator.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="GPUCommonHW.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\ReplacedTexture.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\TextureReplacer.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\VertexDecoderHandwritten.h">
+      <Filter>Common</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\State.h">
+      <Filter>Debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="Common\DepthRaster.h">
       <Filter>Common</Filter>
     </ClInclude>
   </ItemGroup>
@@ -522,6 +540,24 @@
       <Filter>GLES</Filter>
     </ClCompile>
     <ClCompile Include="Common\VertexDecoderRiscV.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="GPUCommonHW.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\ReplacedTexture.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\TextureReplacer.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\VertexDecoderHandwritten.cpp">
+      <Filter>Common</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\State.cpp">
+      <Filter>Debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="Common\DepthRaster.cpp">
       <Filter>Common</Filter>
     </ClCompile>
   </ItemGroup>

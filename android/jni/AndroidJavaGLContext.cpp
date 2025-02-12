@@ -11,18 +11,18 @@ AndroidJavaEGLGraphicsContext::AndroidJavaEGLGraphicsContext() {
 }
 
 bool AndroidJavaEGLGraphicsContext::InitFromRenderThread(ANativeWindow *wnd, int desiredBackbufferSizeX, int desiredBackbufferSizeY, int backbufferFormat, int androidVersion) {
-	INFO_LOG(G3D, "AndroidJavaEGLGraphicsContext::InitFromRenderThread");
+	INFO_LOG(Log::G3D, "AndroidJavaEGLGraphicsContext::InitFromRenderThread");
 	if (!CheckGLExtensions()) {
-		ERROR_LOG(G3D, "CheckGLExtensions failed - not gonna attempt starting up.");
+		ERROR_LOG(Log::G3D, "CheckGLExtensions failed - not gonna attempt starting up.");
 		state_ = GraphicsContextState::FAILED_INIT;
 		return false;
 	}
 
 	// OpenGL handles rotated rendering in the driver.
-	g_display_rotation = DisplayRotation::ROTATE_0;
-	g_display_rot_matrix.setIdentity();
+	g_display.rotation = DisplayRotation::ROTATE_0;
+	g_display.rot_matrix.setIdentity();
 
-	draw_ = Draw::T3DCreateGLContext();  // Can't fail
+	draw_ = Draw::T3DCreateGLContext(false);  // Can't fail
 	renderManager_ = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
 	renderManager_->SetInflightFrames(g_Config.iInflightFrames);
 
@@ -37,7 +37,7 @@ bool AndroidJavaEGLGraphicsContext::InitFromRenderThread(ANativeWindow *wnd, int
 }
 
 void AndroidJavaEGLGraphicsContext::ShutdownFromRenderThread() {
-	INFO_LOG(G3D, "AndroidJavaEGLGraphicsContext::Shutdown");
+	INFO_LOG(Log::G3D, "AndroidJavaEGLGraphicsContext::Shutdown");
 	renderManager_ = nullptr;  // owned by draw_.
 	delete draw_;
 	draw_ = nullptr;

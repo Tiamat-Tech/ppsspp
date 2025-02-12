@@ -63,15 +63,10 @@ static EShLanguage GetShLanguageFromStage(const ShaderStage stage) {
 }
 
 void ShaderTranslationInit() {
-	// TODO: We have TLS issues on UWP
-#if !PPSSPP_PLATFORM(UWP)
 	glslang::InitializeProcess();
-#endif
 }
 void ShaderTranslationShutdown() {
-#if !PPSSPP_PLATFORM(UWP)
 	glslang::FinalizeProcess();
-#endif
 }
 
 struct Builtin {
@@ -79,7 +74,7 @@ struct Builtin {
 	const char *replacement;
 };
 
-static const char *cbufferDecl = R"(
+static const char * const cbufferDecl = R"(
 cbuffer data : register(b0) {
 	float2 u_texelDelta;
 	float2 u_pixelDelta;
@@ -90,13 +85,13 @@ cbuffer data : register(b0) {
 };
 )";
 
-static const char *vulkanPrologue =
+static const char * const vulkanPrologue =
 R"(#version 450
 #extension GL_ARB_separate_shader_objects : enable
 #extension GL_ARB_shading_language_420pack : enable
 )";
 
-static const char *vulkanUboDecl = R"(
+static const char * const vulkanUboDecl = R"(
 layout (std140, set = 0, binding = 0) uniform Data {
 	vec2 u_texelDelta;
 	vec2 u_pixelDelta;
@@ -107,7 +102,7 @@ layout (std140, set = 0, binding = 0) uniform Data {
 };
 )";
 
-static const char *d3d9RegisterDecl = R"(
+static const char * const d3d9RegisterDecl = R"(
 float4 gl_HalfPixel : register(c0);
 float2 u_texelDelta : register(c1);
 float2 u_pixelDelta : register(c2);
@@ -208,7 +203,7 @@ bool ConvertToVulkanGLSL(std::string *dest, TranslatedShaderMetadata *destMetada
 	}
 
 	// DUMPLOG(src.c_str());
-	// INFO_LOG(SYSTEM, "---->");
+	// INFO_LOG(Log::System, "---->");
 	// DUMPLOG(LineNumberString(out.str()).c_str());
 
 	*dest = out.str();
@@ -228,11 +223,6 @@ bool TranslateShader(std::string *dest, ShaderLanguage destLang, const ShaderLan
 		bool result = ConvertToVulkanGLSL(dest, destMetadata, src, stage, errorMessage);
 		return result;
 	}
-
-#if PPSSPP_PLATFORM(UWP)
-	*errorMessage = "No shader translation available (UWP)";
-	return false;
-#endif
 
 	errorMessage->clear();
 

@@ -15,8 +15,14 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include "Common/Common.h"
 #include "GPU/Math3D.h"
+#include "Common/Common.h"
+#include "Common/Math/SIMDHeaders.h"
+
+#if PPSSPP_ARCH(SSE2)
+// For the SSE4 stuff.
+#include <smmintrin.h>
+#endif
 
 namespace Math3D {
 
@@ -26,7 +32,8 @@ float Vec2<float>::Length() const
 	// Doubt this is worth it for a vec2 :/
 #if defined(_M_SSE)
 	float ret;
-	__m128 xy = _mm_loadu_ps(&x);
+	__m128d tmp = _mm_load_sd((const double*)&x);
+	__m128 xy = _mm_castpd_ps(tmp);
 	__m128 sq = _mm_mul_ps(xy, xy);
 	const __m128 r2 = _mm_shuffle_ps(sq, sq, _MM_SHUFFLE(0, 0, 0, 1));
 	const __m128 res = _mm_add_ss(sq, r2);

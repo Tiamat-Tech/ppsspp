@@ -29,7 +29,6 @@ public:
 	TiltAnalogSettingsScreen(const Path &gamePath) : UIDialogScreenWithGameBackground(gamePath) {}
 
 	void CreateViews() override;
-	void axis(const AxisInput &axis) override;
 	void update() override;
 	const char *tag() const override { return "TiltAnalogSettings"; }
 
@@ -38,5 +37,7 @@ private:
 	
 	Lin::Vec3 down_{};
 	JoystickHistoryView *tilt_ = nullptr;
-	GamepadView *gpView_ = nullptr;
 };
+
+extern const char *g_tiltTypes[];
+extern const size_t g_numTiltTypes;

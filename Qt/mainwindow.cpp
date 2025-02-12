@@ -18,7 +18,7 @@
 #include "Core/HLE/sceUmd.h"
 #include "Core/SaveState.h"
 #include "Core/System.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "UI/GamepadEmu.h"
 
 MainWindow::MainWindow(QWidget *parent, bool fullscreen) :
@@ -100,7 +100,7 @@ void MainWindow::updateMenus()
 	updateMenuGroupInt(frameSkippingGroup, g_Config.iFrameSkip);
 	updateMenuGroupInt(frameSkippingTypeGroup, g_Config.iFrameSkipType);
 	updateMenuGroupInt(textureFilteringGroup, g_Config.iTexFiltering);
-	updateMenuGroupInt(screenScalingFilterGroup, g_Config.iBufFilter);
+	updateMenuGroupInt(screenScalingFilterGroup, g_Config.iDisplayFilter);
 	updateMenuGroupInt(textureScalingLevelGroup, g_Config.iTexScalingLevel);
 	updateMenuGroupInt(textureScalingTypeGroup, g_Config.iTexScalingType);
 
@@ -117,7 +117,7 @@ void MainWindow::updateMenus()
 
 void MainWindow::bootDone()
 {
-	if (nextState == CORE_RUNNING)
+	if (nextState == CORE_RUNNING_CPU)
 		runAct();
 	updateMenus();
 }
@@ -125,12 +125,12 @@ void MainWindow::bootDone()
 /* SIGNALS */
 void MainWindow::loadAct()
 {
-	QString filename = QFileDialog::getOpenFileName(NULL, "Load File", g_Config.currentDirectory.c_str(), "PSP ROMs (*.pbp *.elf *.iso *.cso *.prx)");
+	QString filename = QFileDialog::getOpenFileName(NULL, "Load File", g_Config.currentDirectory.c_str(), "PSP ROMs (*.pbp *.elf *.iso *.cso *.chd *.prx)");
 	if (QFile::exists(filename))
 	{
 		QFileInfo info(filename);
 		g_Config.currentDirectory = Path(info.absolutePath().toStdString());
-		NativeMessageReceived("boot", filename.toStdString().c_str());
+		System_PostUIMessage(UIMessage::REQUEST_GAME_BOOT, filename.toStdString().c_str());
 	}
 }
 
@@ -138,7 +138,7 @@ void MainWindow::closeAct()
 {
 	updateMenus();
 
-	NativeMessageReceived("stop", "");
+	System_PostUIMessage(UIMessage::REQUEST_GAME_STOP);
 	SetGameTitle("");
 }
 
@@ -149,7 +149,7 @@ void MainWindow::openmsAct()
 	QDesktopServices::openUrl(QUrl(memorystick));
 }
 
-void SaveStateActionFinished(SaveState::Status status, const std::string &message, void *userdata)
+static void SaveStateActionFinished(SaveState::Status status, std::string_view message, void *userdata)
 {
 	// TODO: Improve messaging?
 	if (status == SaveState::Status::FAILURE)
@@ -232,30 +232,29 @@ void MainWindow::exitAct()
 
 void MainWindow::runAct()
 {
-	NativeMessageReceived("run", "");
+	System_PostUIMessage(UIMessage::REQUEST_GAME_RUN);
 }
 
 void MainWindow::pauseAct()
 {
-	NativeMessageReceived("pause", "");
+	System_PostUIMessage(UIMessage::REQUEST_GAME_PAUSE);
 }
 
 void MainWindow::stopAct()
 {
 	Core_Stop();
-	NativeMessageReceived("stop", "");
+	System_PostUIMessage(UIMessage::REQUEST_GAME_STOP);
 }
 
 void MainWindow::resetAct()
 {
 	updateMenus();
-
-	NativeMessageReceived("reset", "");
+	System_PostUIMessage(UIMessage::REQUEST_GAME_RESET);
 }
 
 void MainWindow::switchUMDAct()
 {
-	QString filename = QFileDialog::getOpenFileName(NULL, "Switch UMD", g_Config.currentDirectory.c_str(), "PSP ROMs (*.pbp *.elf *.iso *.cso *.prx)");
+	QString filename = QFileDialog::getOpenFileName(NULL, "Switch UMD", g_Config.currentDirectory.c_str(), "PSP ROMs (*.pbp *.elf *.iso *.cso *.chd *.prx)");
 	if (QFile::exists(filename))
 	{
 		QFileInfo info(filename);
@@ -351,7 +350,9 @@ void MainWindow::dumpNextAct()
 
 void MainWindow::consoleAct()
 {
+#if PPSSPP_PLATFORM(WINDOWS)
 	LogManager::GetInstance()->GetConsoleListener()->Show(LogManager::GetInstance()->GetConsoleListener()->Hidden());
+#endif
 }
 
 void MainWindow::raiseTopMost()
@@ -375,7 +376,7 @@ void MainWindow::SetFullScreen(bool fullscreen) {
 #endif
 
 		showFullScreen();
-		InitPadLayout(dp_xres, dp_yres);
+		InitPadLayout(g_display.dp_xres, g_display.dp_yres);
 
 		if (GetUIState() == UISTATE_INGAME && !g_Config.bShowTouchControls)
 			QApplication::setOverrideCursor(QCursor(Qt::BlankCursor));
@@ -387,7 +388,7 @@ void MainWindow::SetFullScreen(bool fullscreen) {
 
 		showNormal();
 		SetWindowScale(-1);
-		InitPadLayout(dp_xres, dp_yres);
+		InitPadLayout(g_display.dp_xres, g_display.dp_yres);
 
 		if (GetUIState() == UISTATE_INGAME && QApplication::overrideCursor())
 			QApplication::restoreOverrideCursor();
@@ -587,8 +588,6 @@ void MainWindow::createMenus()
 		->addDisableState(UISTATE_MENU);
 	debugMenu->add(new MenuAction(this, SLOT(dumpNextAct()),  QT_TR_NOOP("D&ump next frame to log")))
 		->addDisableState(UISTATE_MENU);
-	debugMenu->add(new MenuAction(this, SLOT(statsAct()),   QT_TR_NOOP("Show debu&g statistics")))
-		->addEventChecked(&g_Config.bShowDebugStats);
 	debugMenu->addSeparator();
 	debugMenu->add(new MenuAction(this, SLOT(consoleAct()),   QT_TR_NOOP("&Log console"), Qt::CTRL + Qt::Key_L))
 		->addDisableState(UISTATE_MENU);
@@ -653,8 +652,6 @@ void MainWindow::createMenus()
 
 	gameSettingsMenu->add(new MenuAction(this, SLOT(transformAct()),     QT_TR_NOOP("&Hardware transform")))
 		->addEventChecked(&g_Config.bHardwareTransform);
-	gameSettingsMenu->add(new MenuAction(this, SLOT(vertexCacheAct()),   QT_TR_NOOP("&Vertex cache")))
-		->addEventChecked(&g_Config.bVertexCache);
 	gameSettingsMenu->addSeparator();
 	gameSettingsMenu->add(new MenuAction(this, SLOT(audioAct()),   QT_TR_NOOP("Enable s&ound")))
 		->addEventChecked(&g_Config.bEnableSound);

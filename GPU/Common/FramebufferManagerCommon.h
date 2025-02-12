@@ -30,9 +30,10 @@
 #include "Common/CommonTypes.h"
 #include "Common/Log.h"
 #include "Common/GPU/thin3d.h"
+#include "Core/ConfigValues.h"
 #include "GPU/GPU.h"
 #include "GPU/ge_constants.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/Common/Draw2D.h"
 
 enum {
@@ -161,8 +162,13 @@ struct VirtualFramebuffer {
 	inline GEBufferFormat Format(RasterChannel channel) const { return channel == RASTER_COLOR ? fb_format : GE_FORMAT_DEPTH16; }
 	inline int BindSeq(RasterChannel channel) const { return channel == RASTER_COLOR ? colorBindSeq : depthBindSeq; }
 
-	int BufferByteSize(RasterChannel channel) const {
-		return channel == RASTER_COLOR ? fb_stride * height * (fb_format == GE_FORMAT_8888 ? 4 : 2) : z_stride * height * 2;
+	// Computed from stride.
+	int BufferByteSize(RasterChannel channel) const { return BufferByteStride(channel) * height; }
+	int BufferByteStride(RasterChannel channel) const {
+		return channel == RASTER_COLOR ? fb_stride * (fb_format == GE_FORMAT_8888 ? 4 : 2) : z_stride * 2;
+	}
+	int BufferByteWidth(RasterChannel channel) const {
+		return channel == RASTER_COLOR ? width * (fb_format == GE_FORMAT_8888 ? 4 : 2) : width * 2;
 	}
 };
 
@@ -199,6 +205,7 @@ enum BindFramebufferColorFlags {
 	BINDFBCOLOR_APPLY_TEX_OFFSET = 4,
 	// Used when rendering to a temporary surface (e.g. not the current render target.)
 	BINDFBCOLOR_FORCE_SELF = 8,
+	BINDFBCOLOR_UNCACHED = 16,
 };
 
 enum DrawTextureFlags {
@@ -217,6 +224,8 @@ enum class TempFBO {
 	BLIT,
 	// For copies of framebuffers (e.g. shader blending.)
 	COPY,
+	// Used for copies when setting color to depth.
+	Z_COPY,
 	// Used to copy stencil data, means we need a stencil backing.
 	STENCIL,
 };
@@ -264,6 +273,12 @@ namespace Draw {
 class DrawContext;
 }
 
+struct DrawPixelsEntry {
+	Draw::Texture *tex;
+	uint64_t contentsHash;
+	int frameNumber;
+};
+
 struct GPUDebugBuffer;
 class DrawEngineCommon;
 class PresentationCommon;
@@ -291,13 +306,14 @@ public:
 	void DestroyFramebuf(VirtualFramebuffer *v);
 
 	VirtualFramebuffer *DoSetRenderFrameBuffer(FramebufferHeuristicParams &params, u32 skipDrawReason);
-	VirtualFramebuffer *SetRenderFrameBuffer(bool framebufChanged, int skipDrawReason) {
+	VirtualFramebuffer *SetRenderFrameBuffer(bool framebufChanged, int skipDrawReason, bool *changed) {
 		// Inlining this part since it's so frequent.
 		if (!framebufChanged && currentRenderVfb_) {
 			currentRenderVfb_->last_frame_render = gpuStats.numFlips;
 			currentRenderVfb_->dirtyAfterDisplay = true;
 			if (!skipDrawReason)
 				currentRenderVfb_->reallyDirtyAfterDisplay = true;
+			*changed = false;
 			return currentRenderVfb_;
 		} else {
 			// This is so that we will be able to drive DoSetRenderFramebuffer with inputs
@@ -307,13 +323,14 @@ public:
 			VirtualFramebuffer *vfb = DoSetRenderFrameBuffer(inputs, skipDrawReason);
 			_dbg_assert_msg_(vfb, "DoSetRenderFramebuffer must return a valid framebuffer.");
 			_dbg_assert_msg_(currentRenderVfb_, "DoSetRenderFramebuffer must set a valid framebuffer.");
+			*changed = true;
 			return vfb;
 		}
 	}
 	void SetDepthFrameBuffer(bool isClearingDepth);
 
 	void RebindFramebuffer(const char *tag);
-	std::vector<FramebufferInfo> GetFramebufferList() const;
+	std::vector<const VirtualFramebuffer *> GetFramebufferList() const;
 
 	void CopyDisplayToOutput(bool reallyDirty);
 
@@ -341,7 +358,7 @@ public:
 	void ReadFramebufferToMemory(VirtualFramebuffer *vfb, int x, int y, int w, int h, RasterChannel channel, Draw::ReadbackMode mode);
 
 	void DownloadFramebufferForClut(u32 fb_address, u32 loadBytes);
-	void DrawFramebufferToOutput(const u8 *srcPixels, int srcStride, GEBufferFormat srcPixelFormat);
+	bool DrawFramebufferToOutput(const u8 *srcPixels, int srcStride, GEBufferFormat srcPixelFormat);
 
 	void DrawPixels(VirtualFramebuffer *vfb, int dstX, int dstY, const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height, RasterChannel channel, const char *tag);
 
@@ -368,13 +385,14 @@ public:
 		return useBufferedRendering_;
 	}
 
-	bool MayIntersectFramebuffer(u32 start) const {
+	// TODO: Maybe just include the last depth buffer address in this, too.
+	bool MayIntersectFramebufferColor(u32 start) const {
 		// Clear the cache/kernel bits.
 		start &= 0x3FFFFFFF;
 		if (Memory::IsVRAMAddress(start))
 			start &= 0x041FFFFF;
 		// Most games only have two framebuffers at the start.
-		if (start >= framebufRangeEnd_ || start < PSP_GetVidMemBase()) {
+		if (start >= framebufColorRangeEnd_ || start < PSP_GetVidMemBase()) {
 			return false;
 		}
 		return true;
@@ -466,6 +484,14 @@ public:
 		return msaaLevel_;
 	}
 
+	void DiscardFramebufferCopy() {
+		currentFramebufferCopy_ = nullptr;
+	}
+
+	bool PresentedThisFrame() const;
+
+	void DrawImGuiDebug(int &selected) const;
+
 protected:
 	virtual void ReadbackFramebuffer(VirtualFramebuffer *vfb, int x, int y, int w, int h, RasterChannel channel, Draw::ReadbackMode mode);
 	// Used for when a shader is required, such as GLES.
@@ -486,21 +512,20 @@ protected:
 	// Used by ReadFramebufferToMemory and later framebuffer block copies
 	void BlitFramebuffer(VirtualFramebuffer *dst, int dstX, int dstY, VirtualFramebuffer *src, int srcX, int srcY, int w, int h, int bpp, RasterChannel channel, const char *tag);
 
-	void CopyFramebufferForColorTexture(VirtualFramebuffer *dst, VirtualFramebuffer *src, int flags, int layer);
+	void CopyFramebufferForColorTexture(VirtualFramebuffer *dst, VirtualFramebuffer *src, int flags, int layer, bool *partial);
 
 	void EstimateDrawingSize(u32 fb_address, int fb_stride, GEBufferFormat fb_format, int viewport_width, int viewport_height, int region_width, int region_height, int scissor_width, int scissor_height, int &drawing_width, int &drawing_height);
 
 	void NotifyRenderFramebufferCreated(VirtualFramebuffer *vfb);
-	void NotifyRenderFramebufferUpdated(VirtualFramebuffer *vfb);
+	static void NotifyRenderFramebufferUpdated(VirtualFramebuffer *vfb);
 	void NotifyRenderFramebufferSwitched(VirtualFramebuffer *prevVfb, VirtualFramebuffer *vfb, bool isClearingDepth);
 
-	void BlitFramebufferDepth(VirtualFramebuffer *src, VirtualFramebuffer *dst);
+	void BlitFramebufferDepth(VirtualFramebuffer *src, VirtualFramebuffer *dst, bool allowSizeMismatch = false);
 
 	void ResizeFramebufFBO(VirtualFramebuffer *vfb, int w, int h, bool force = false, bool skipCopy = false);
-	void ShowScreenResolution();
 
-	bool ShouldDownloadFramebufferColor(const VirtualFramebuffer *vfb) const;
-	bool ShouldDownloadFramebufferDepth(const VirtualFramebuffer *vfb) const;
+	static bool ShouldDownloadFramebufferColor(const VirtualFramebuffer *vfb);
+	static bool ShouldDownloadFramebufferDepth(const VirtualFramebuffer *vfb);
 	void DownloadFramebufferOnSwitch(VirtualFramebuffer *vfb);
 
 	bool FindTransferFramebuffer(u32 basePtr, int stride, int x, int y, int w, int h, int bpp, bool destination, BlockTransferRect *rect);
@@ -510,7 +535,7 @@ protected:
 
 	VirtualFramebuffer *CreateRAMFramebuffer(uint32_t fbAddress, int width, int height, int stride, GEBufferFormat format);
 
-	void UpdateFramebufUsage(VirtualFramebuffer *vfb);
+	void UpdateFramebufUsage(VirtualFramebuffer *vfb) const;
 
 	int GetFramebufferLayers() const;
 
@@ -527,6 +552,8 @@ protected:
 	inline int GetBindSeqCount() {
 		return fbBindSeqCount_++;
 	}
+
+	static SkipGPUReadbackMode GetSkipGPUReadbackMode();
 
 	PresentationCommon *presentation_ = nullptr;
 
@@ -552,8 +579,10 @@ protected:
 
 	VirtualFramebuffer *currentRenderVfb_ = nullptr;
 
+	Draw::Framebuffer *currentFramebufferCopy_ = nullptr;
+
 	// The range of PSP memory that may contain FBOs.  So we can skip iterating.
-	u32 framebufRangeEnd_ = 0;
+	u32 framebufColorRangeEnd_ = 0;
 
 	bool useBufferedRendering_ = false;
 	bool postShaderIsUpscalingFilter_ = false;
@@ -561,6 +590,8 @@ protected:
 
 	std::vector<VirtualFramebuffer *> vfbs_;
 	std::vector<VirtualFramebuffer *> bvfbs_; // blitting framebuffers (for download)
+
+	std::vector<DrawPixelsEntry> drawPixelsCache_;
 
 	bool gameUsesSequentialCopies_ = false;
 
@@ -623,3 +654,6 @@ protected:
 	u8 *convBuf_ = nullptr;
 	u32 convBufSize_ = 0;
 };
+
+// Should probably live elsewhere.
+bool GetOutputFramebuffer(Draw::DrawContext *draw, GPUDebugBuffer &buffer);

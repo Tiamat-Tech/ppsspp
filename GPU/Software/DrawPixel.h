@@ -66,7 +66,7 @@ public:
 
 	// Returns a pointer to the code to run.
 	SingleFunc GetSingle(const PixelFuncID &id, BinManager *binner);
-	SingleFunc GenericSingle(const PixelFuncID &id);
+	static SingleFunc GenericSingle(const PixelFuncID &id);
 	void Clear() override;
 	void Flush();
 
@@ -125,10 +125,10 @@ private:
 		}
 	};
 
-	DenseHashMap<size_t, SingleFunc, nullptr> cache_;
+	DenseHashMap<size_t, SingleFunc> cache_;
 	std::unordered_map<PixelFuncID, const u8 *> addresses_;
 	std::unordered_set<PixelFuncID> compileQueue_;
-	int clearGen_ = 0;
+	static int clearGen_;
 	static thread_local LastCache lastSingle_;
 
 	const u8 *constBlendHalf_11_4s_ = nullptr;

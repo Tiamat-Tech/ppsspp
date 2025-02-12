@@ -4,6 +4,12 @@
 #include "Common/Log.h"
 #include "Common/StringUtils.h"
 
+#if 0 // def _DEBUG
+#define VLOG(...) NOTICE_LOG(Log::G3D, __VA_ARGS__)
+#else
+#define VLOG(...)
+#endif
+
 void CachedReadback::Destroy(VulkanContext *vulkan) {
 	if (buffer) {
 		vulkan->Delete().QueueDeleteBufferAllocation(buffer, allocation);
@@ -15,10 +21,17 @@ void FrameData::Init(VulkanContext *vulkan, int index) {
 	this->index = index;
 	VkDevice device = vulkan->GetDevice();
 
+	VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+	semaphoreCreateInfo.flags = 0;
+	VkResult res = vkCreateSemaphore(vulkan->GetDevice(), &semaphoreCreateInfo, nullptr, &acquireSemaphore);
+	_dbg_assert_(res == VK_SUCCESS);
+	res = vkCreateSemaphore(vulkan->GetDevice(), &semaphoreCreateInfo, nullptr, &renderingCompleteSemaphore);
+	_dbg_assert_(res == VK_SUCCESS);
+
 	VkCommandPoolCreateInfo cmd_pool_info = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 	cmd_pool_info.queueFamilyIndex = vulkan->GetGraphicsQueueFamilyIndex();
 	cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-	VkResult res = vkCreateCommandPool(device, &cmd_pool_info, nullptr, &cmdPoolInit);
+	res = vkCreateCommandPool(device, &cmd_pool_info, nullptr, &cmdPoolInit);
 	_dbg_assert_(res == VK_SUCCESS);
 	res = vkCreateCommandPool(device, &cmd_pool_info, nullptr, &cmdPoolMain);
 	_dbg_assert_(res == VK_SUCCESS);
@@ -55,6 +68,8 @@ void FrameData::Destroy(VulkanContext *vulkan) {
 	vkDestroyCommandPool(device, cmdPoolMain, nullptr);
 	vkDestroyFence(device, fence, nullptr);
 	vkDestroyQueryPool(device, profile.queryPool, nullptr);
+	vkDestroySemaphore(device, acquireSemaphore, nullptr);
+	vkDestroySemaphore(device, renderingCompleteSemaphore, nullptr);
 
 	readbacks_.IterateMut([=](const ReadbackKey &key, CachedReadback *value) {
 		value->Destroy(vulkan);
@@ -63,11 +78,11 @@ void FrameData::Destroy(VulkanContext *vulkan) {
 	readbacks_.Clear();
 }
 
-void FrameData::AcquireNextImage(VulkanContext *vulkan, FrameDataShared &shared) {
+void FrameData::AcquireNextImage(VulkanContext *vulkan) {
 	_dbg_assert_(!hasAcquired);
 
 	// Get the index of the next available swapchain image, and a semaphore to block command buffer execution on.
-	VkResult res = vkAcquireNextImageKHR(vulkan->GetDevice(), vulkan->GetSwapchain(), UINT64_MAX, shared.acquireSemaphore, (VkFence)VK_NULL_HANDLE, &curSwapchainImage);
+	VkResult res = vkAcquireNextImageKHR(vulkan->GetDevice(), vulkan->GetSwapchain(), UINT64_MAX, acquireSemaphore, (VkFence)VK_NULL_HANDLE, &curSwapchainImage);
 	switch (res) {
 	case VK_SUCCESS:
 		hasAcquired = true;
@@ -75,13 +90,17 @@ void FrameData::AcquireNextImage(VulkanContext *vulkan, FrameDataShared &shared)
 	case VK_SUBOPTIMAL_KHR:
 		hasAcquired = true;
 		// Hopefully the resize will happen shortly. Ignore - one frame might look bad or something.
-		WARN_LOG(G3D, "VK_SUBOPTIMAL_KHR returned - ignoring");
+		WARN_LOG(Log::G3D, "VK_SUBOPTIMAL_KHR returned - ignoring");
 		break;
 	case VK_ERROR_OUT_OF_DATE_KHR:
 	case VK_TIMEOUT:
 	case VK_NOT_READY:
 		// We do not set hasAcquired here!
-		WARN_LOG(G3D, "%s returned from AcquireNextImage - processing the frame, but not presenting", VulkanResultToString(res));
+		WARN_LOG(Log::G3D, "%s returned from AcquireNextImage - processing the frame, but not presenting", VulkanResultToString(res));
+		skipSwap = true;
+		break;
+	case VK_ERROR_SURFACE_LOST_KHR:
+		ERROR_LOG(Log::G3D, "%s returned from AcquireNextImage - ignoring, but this better be during shutdown", VulkanResultToString(res));
 		skipSwap = true;
 		break;
 	default:
@@ -101,8 +120,27 @@ VkResult FrameData::QueuePresent(VulkanContext *vulkan, FrameDataShared &shared)
 	present.swapchainCount = 1;
 	present.pSwapchains = &swapchain;
 	present.pImageIndices = &curSwapchainImage;
-	present.pWaitSemaphores = &shared.renderingCompleteSemaphore;
+	present.pWaitSemaphores = &renderingCompleteSemaphore;
 	present.waitSemaphoreCount = 1;
+
+	// Can't move these into the if.
+	VkPresentIdKHR presentID{ VK_STRUCTURE_TYPE_PRESENT_ID_KHR };
+	VkPresentTimesInfoGOOGLE presentGOOGLE{ VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE };
+
+	uint64_t frameId = this->frameId;
+	VkPresentTimeGOOGLE presentTimeGOOGLE{ (uint32_t)frameId, 0 };  // it's ok to truncate this. it'll wrap around and work (if we ever reach 4 billion frames..)
+
+	if (shared.measurePresentTime) {
+		if (vulkan->Extensions().KHR_present_id && vulkan->GetDeviceFeatures().enabled.presentId.presentId) {
+			ChainStruct(present, &presentID);
+			presentID.pPresentIds = &frameId;
+			presentID.swapchainCount = 1;
+		} else if (vulkan->Extensions().GOOGLE_display_timing) {
+			ChainStruct(present, &presentGOOGLE);
+			presentGOOGLE.pTimes = &presentTimeGOOGLE;
+			presentGOOGLE.swapchainCount = 1;
+		}
+	}
 
 	return vkQueuePresentKHR(vulkan->GetGraphicsQueue(), &present);
 }
@@ -121,7 +159,7 @@ VkCommandBuffer FrameData::GetInitCmd(VulkanContext *vulkan) {
 		}
 
 		// Good spot to reset the query pool.
-		if (profilingEnabled_) {
+		if (profile.enabled) {
 			vkCmdResetQueryPool(initCmd, profile.queryPool, 0, MAX_TIMESTAMP_QUERIES);
 			vkCmdWriteTimestamp(initCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, profile.queryPool, 0);
 		}
@@ -131,14 +169,14 @@ VkCommandBuffer FrameData::GetInitCmd(VulkanContext *vulkan) {
 	return initCmd;
 }
 
-void FrameData::SubmitPending(VulkanContext *vulkan, FrameSubmitType type, FrameDataShared &sharedData) {
+void FrameData::Submit(VulkanContext *vulkan, FrameSubmitType type, FrameDataShared &sharedData) {
 	VkCommandBuffer cmdBufs[3];
 	int numCmdBufs = 0;
 
 	VkFence fenceToTrigger = VK_NULL_HANDLE;
 
 	if (hasInitCommands) {
-		if (profilingEnabled_) {
+		if (profile.enabled) {
 			// Pre-allocated query ID 1 - end of init cmdbuf.
 			vkCmdWriteTimestamp(initCmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, profile.queryPool, 1);
 		}
@@ -162,16 +200,19 @@ void FrameData::SubmitPending(VulkanContext *vulkan, FrameSubmitType type, Frame
 		hasMainCommands = false;
 	}
 
-	if (hasPresentCommands && type != FrameSubmitType::Pending) {
+	if (hasPresentCommands) {
+		_dbg_assert_(type != FrameSubmitType::Pending);
 		VkResult res = vkEndCommandBuffer(presentCmd);
+
 		_assert_msg_(res == VK_SUCCESS, "vkEndCommandBuffer failed (present)! result=%s", VulkanResultToString(res));
 
 		cmdBufs[numCmdBufs++] = presentCmd;
 		hasPresentCommands = false;
+	}
 
-		if (type == FrameSubmitType::Present) {
-			fenceToTrigger = fence;
-		}
+	if (type == FrameSubmitType::FinishFrame) {
+		_dbg_assert_(!fenceToTrigger);
+		fenceToTrigger = fence;
 	}
 
 	if (!numCmdBufs && fenceToTrigger == VK_NULL_HANDLE) {
@@ -181,27 +222,31 @@ void FrameData::SubmitPending(VulkanContext *vulkan, FrameSubmitType type, Frame
 
 	VkSubmitInfo submit_info{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
 	VkPipelineStageFlags waitStage[1]{ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	if (type == FrameSubmitType::Present && !skipSwap) {
+	if (type == FrameSubmitType::FinishFrame && !skipSwap) {
 		_dbg_assert_(hasAcquired);
 		submit_info.waitSemaphoreCount = 1;
-		submit_info.pWaitSemaphores = &sharedData.acquireSemaphore;
+		submit_info.pWaitSemaphores = &acquireSemaphore;
 		submit_info.pWaitDstStageMask = waitStage;
 	}
 	submit_info.commandBufferCount = (uint32_t)numCmdBufs;
 	submit_info.pCommandBuffers = cmdBufs;
-	if (type == FrameSubmitType::Present && !skipSwap) {
+	if (type == FrameSubmitType::FinishFrame && !skipSwap) {
 		submit_info.signalSemaphoreCount = 1;
-		submit_info.pSignalSemaphores = &sharedData.renderingCompleteSemaphore;
+		submit_info.pSignalSemaphores = &renderingCompleteSemaphore;
 	}
 
 	VkResult res;
 	if (fenceToTrigger == fence) {
+		VLOG("Doing queue submit, fencing frame %d", this->index);
 		// The fence is waited on by the main thread, they are not allowed to access it simultaneously.
 		res = vkQueueSubmit(vulkan->GetGraphicsQueue(), 1, &submit_info, fenceToTrigger);
-		std::lock_guard<std::mutex> lock(fenceMutex);
-		readyForFence = true;
-		fenceCondVar.notify_one();
+		if (sharedData.useMultiThreading) {
+			std::lock_guard<std::mutex> lock(fenceMutex);
+			readyForFence = true;
+			fenceCondVar.notify_one();
+		}
 	} else {
+		VLOG("Doing queue submit, fencing something (%p)", fenceToTrigger);
 		res = vkQueueSubmit(vulkan->GetGraphicsQueue(), 1, &submit_info, fenceToTrigger);
 	}
 
@@ -219,22 +264,16 @@ void FrameData::SubmitPending(VulkanContext *vulkan, FrameSubmitType type, Frame
 	}
 }
 
-void FrameDataShared::Init(VulkanContext *vulkan) {
-	VkSemaphoreCreateInfo semaphoreCreateInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-	semaphoreCreateInfo.flags = 0;
-	VkResult res = vkCreateSemaphore(vulkan->GetDevice(), &semaphoreCreateInfo, nullptr, &acquireSemaphore);
-	_dbg_assert_(res == VK_SUCCESS);
-	res = vkCreateSemaphore(vulkan->GetDevice(), &semaphoreCreateInfo, nullptr, &renderingCompleteSemaphore);
-	_dbg_assert_(res == VK_SUCCESS);
-
+void FrameDataShared::Init(VulkanContext *vulkan, bool useMultiThreading, bool measurePresentTime) {
 	// This fence is used for synchronizing readbacks. Does not need preinitialization.
 	readbackFence = vulkan->CreateFence(false);
 	vulkan->SetDebugName(readbackFence, VK_OBJECT_TYPE_FENCE, "readbackFence");
+
+	this->useMultiThreading = useMultiThreading;
+	this->measurePresentTime = measurePresentTime;
 }
 
 void FrameDataShared::Destroy(VulkanContext *vulkan) {
 	VkDevice device = vulkan->GetDevice();
-	vkDestroySemaphore(device, acquireSemaphore, nullptr);
-	vkDestroySemaphore(device, renderingCompleteSemaphore, nullptr);
 	vkDestroyFence(device, readbackFence, nullptr);
 }

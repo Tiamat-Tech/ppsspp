@@ -19,8 +19,10 @@
 
 #include <functional>
 #include <memory>
+#include <set>
 #include <mutex>
 #include <vector>
+#include <string>
 
 #include "Common/UI/View.h"
 #include "Common/UI/UIScreen.h"
@@ -34,7 +36,12 @@ class SingleControlMapper;
 
 class ControlMappingScreen : public UIDialogScreenWithGameBackground {
 public:
-	explicit ControlMappingScreen(const Path &gamePath) : UIDialogScreenWithGameBackground(gamePath) {}
+	explicit ControlMappingScreen(const Path &gamePath) : UIDialogScreenWithGameBackground(gamePath) {
+		categoryToggles_[0] = true;
+		categoryToggles_[1] = true;
+		categoryToggles_[2] = true;
+		categoryToggles_[3] = false;
+	}
 	const char *tag() const override { return "ControlMapping"; }
 
 protected:
@@ -42,22 +49,21 @@ protected:
 	void update() override;
 
 private:
-	UI::EventReturn OnDefaultMapping(UI::EventParams &params);
-	UI::EventReturn OnClearMapping(UI::EventParams &params);
 	UI::EventReturn OnAutoConfigure(UI::EventParams &params);
-	UI::EventReturn OnVisualizeMapping(UI::EventParams &params);
 
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
 
 	UI::ScrollView *rightScroll_ = nullptr;
 	std::vector<SingleControlMapper *> mappers_;
 	int keyMapGeneration_ = -1;
+
+	bool categoryToggles_[10]{};
 };
 
 class KeyMappingNewKeyDialog : public PopupScreen {
 public:
-	explicit KeyMappingNewKeyDialog(int btn, bool replace, std::function<void(KeyDef)> callback, std::shared_ptr<I18NCategory> i18n)
-		: PopupScreen(i18n->T("Map Key"), "Cancel", ""), pspBtn_(btn), callback_(callback) {}
+	explicit KeyMappingNewKeyDialog(int btn, bool replace, std::function<void(KeyMap::MultiInputMapping)> callback, I18NCat i18n)
+		: PopupScreen(T(i18n, "Map Key"), "Cancel", ""), pspBtn_(btn), callback_(callback) {}
 
 	const char *tag() const override { return "KeyMappingNewKey"; }
 
@@ -75,15 +81,22 @@ protected:
 
 private:
 	int pspBtn_;
-	std::function<void(KeyDef)> callback_;
-	bool mapped_ = false;  // Prevent double registrations
+	std::function<void(KeyMap::MultiInputMapping)> callback_;
+
+	KeyMap::MultiInputMapping mapping_;
+
+	UI::View *comboMappingsNotEnabled_ = nullptr;
+
+	// We need to do our own detection for axis "keyup" here.
+	std::set<InputMapping> triggeredAxes_;
+
 	double delayUntil_ = 0.0f;
 };
 
 class KeyMappingNewMouseKeyDialog : public PopupScreen {
 public:
-	KeyMappingNewMouseKeyDialog(int btn, bool replace, std::function<void(KeyDef)> callback, std::shared_ptr<I18NCategory> i18n)
-		: PopupScreen(i18n->T("Map Mouse"), "", ""), pspBtn_(btn), callback_(callback), mapped_(false) {}
+	KeyMappingNewMouseKeyDialog(int btn, bool replace, std::function<void(KeyMap::MultiInputMapping)> callback, I18NCat i18n)
+		: PopupScreen(T(i18n, "Map Mouse"), "", ""), pspBtn_(btn), callback_(callback) {}
 
 	const char *tag() const override { return "KeyMappingNewMouseKey"; }
 
@@ -99,8 +112,8 @@ protected:
 
 private:
 	int pspBtn_;
-	std::function<void(KeyDef)> callback_;
-	bool mapped_;  // Prevent double registrations
+	std::function<void(KeyMap::MultiInputMapping)> callback_;
+	bool mapped_ = false;  // Prevent double registrations
 };
 
 class JoystickHistoryView;
@@ -132,43 +145,6 @@ private:
 	JoystickHistoryView *stickView_[2]{};
 };
 
-class TouchTestScreen : public UIDialogScreenWithGameBackground {
-public:
-	TouchTestScreen(const Path &gamePath) : UIDialogScreenWithGameBackground(gamePath) {
-		for (int i = 0; i < MAX_TOUCH_POINTS; i++) {
-			touches_[i].id = -1;
-		}
-	}
-
-	void touch(const TouchInput &touch) override;
-	void render() override;
-
-	bool key(const KeyInput &key) override;
-	void axis(const AxisInput &axis) override;
-
-	const char *tag() const override { return "TouchTest"; }
-
-protected:
-	struct TrackedTouch {
-		int id;
-		float x;
-		float y;
-	};
-	enum {
-		MAX_TOUCH_POINTS = 10,
-	};
-	TrackedTouch touches_[MAX_TOUCH_POINTS]{};
-
-	UI::TextView *lastKeyEvent_ = nullptr;
-	UI::TextView *lastLastKeyEvent_ = nullptr;
-
-	void CreateViews() override;
-
-	UI::EventReturn OnImmersiveModeChange(UI::EventParams &e);
-	UI::EventReturn OnRenderingBackend(UI::EventParams &e);
-	UI::EventReturn OnRecreateActivity(UI::EventParams &e);
-};
-
 class MockPSP;
 
 class VisualMappingScreen : public UIDialogScreenWithGameBackground {
@@ -189,7 +165,7 @@ protected:
 private:
 	UI::EventReturn OnMapButton(UI::EventParams &e);
 	UI::EventReturn OnBindAll(UI::EventParams &e);
-	void HandleKeyMapping(KeyDef key);
+	void HandleKeyMapping(const KeyMap::MultiInputMapping &key);
 	void MapNext(bool successive);
 
 	MockPSP *psp_ = nullptr;

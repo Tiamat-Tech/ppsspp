@@ -20,33 +20,32 @@
 #include "ext/xxhash.h"
 
 #include "Common/Common.h"
-#include "Common/Data/Convert/ColorConv.h"
-#include "Common/CPUDetect.h"
 #include "Common/Log.h"
+#include "Common/Math/SIMDHeaders.h"
 
-#include "GPU/GPU.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/TextureDecoder.h"
 
-#ifdef _M_SSE
-#include <emmintrin.h>
-#include <smmintrin.h>
-#endif
+#include "Common/Math/SIMDHeaders.h"
 
-#if PPSSPP_ARCH(ARM_NEON)
-#if defined(_MSC_VER) && PPSSPP_ARCH(ARM64)
-#include <arm64_neon.h>
-#else
-#include <arm_neon.h>
-#endif
-#endif
-
-#ifdef __clang__
-// Weird how you can't just use #pragma in a macro.
-#define DO_NOT_VECTORIZE_LOOP _Pragma("clang loop vectorize(disable)")
-#else
-#define DO_NOT_VECTORIZE_LOOP
-#endif
+const u8 textureBitsPerPixel[16] = {
+	16,  //GE_TFMT_5650,
+	16,  //GE_TFMT_5551,
+	16,  //GE_TFMT_4444,
+	32,  //GE_TFMT_8888,
+	4,   //GE_TFMT_CLUT4,
+	8,   //GE_TFMT_CLUT8,
+	16,  //GE_TFMT_CLUT16,
+	32,  //GE_TFMT_CLUT32,
+	4,   //GE_TFMT_DXT1,
+	8,   //GE_TFMT_DXT3,
+	8,   //GE_TFMT_DXT5,
+	0,   // INVALID,
+	0,   // INVALID,
+	0,   // INVALID,
+	0,   // INVALID,
+	0,   // INVALID,
+};
 
 #ifdef _M_SSE
 
@@ -224,8 +223,13 @@ static u32 QuickTexHashNonSSE(const void *checkp, u32 size) {
 	if (((intptr_t)checkp & 0xf) == 0 && (size & 0x3f) == 0) {
 		static const u16 cursor2_initial[8] = {0xc00bU, 0x9bd9U, 0x4b73U, 0xb651U, 0x4d9bU, 0x4309U, 0x0083U, 0x0001U};
 		union u32x4_u16x8 {
+#if defined(__GNUC__)
+			uint32_t x32 __attribute__((vector_size(16)));
+			uint16_t x16 __attribute__((vector_size(16)));
+#else
 			u32 x32[4];
 			u16 x16[8];
+#endif
 		};
 		u32x4_u16x8 cursor{};
 		u32x4_u16x8 cursor2;
@@ -542,10 +546,11 @@ void DXTDecoder::WriteColorsDXT3(u32 *dst, const DXT3Block *src, int pitch, int 
 
 void DXTDecoder::WriteColorsDXT5(u32 *dst, const DXT5Block *src, int pitch, int width, int height) {
 	// 48 bits, 3 bit index per pixel, 12 bits per line.
-	u64 alphadata = ((u64)(u16)src->alphadata1 << 32) | (u32)src->alphadata2;
+	u64 allAlpha = ((u64)(u16)src->alphadata1 << 32) | (u32)src->alphadata2;
 
 	for (int y = 0; y < height; y++) {
-		int colordata = src->color.lines[y];
+		uint32_t colordata = src->color.lines[y];
+		uint32_t alphadata = allAlpha >> (12 * y);
 		for (int x = 0; x < width; x++) {
 			dst[x] = colors_[colordata & 3] | (alpha_[alphadata & 7] << 24);
 			colordata >>= 2;

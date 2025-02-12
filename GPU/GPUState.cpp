@@ -17,26 +17,13 @@
 
 #include "ppsspp_config.h"
 #include "Common/Common.h"
+#include "Common/Math/SIMDHeaders.h"
 #include "Common/Serialize/Serializer.h"
 #include "Common/Serialize/SerializeFuncs.h"
-#include "Core/CoreParameter.h"
-#include "Core/Config.h"
-#include "Core/System.h"
 #include "Core/MemMap.h"
 #include "GPU/ge_constants.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 #include "GPU/GPUState.h"
-
-#ifdef _M_SSE
-#include <emmintrin.h>
-#endif
-#if PPSSPP_ARCH(ARM_NEON)
-#if defined(_MSC_VER) && PPSSPP_ARCH(ARM64)
-#include <arm64_neon.h>
-#else
-#include <arm_neon.h>
-#endif
-#endif
 
 // This must be aligned so that the matrices within are aligned.
 alignas(16) GPUgstate gstate;
@@ -128,6 +115,8 @@ void GPUgstate::Reset() {
 	memset(gstate.boneMatrix, 0, sizeof(gstate.boneMatrix));
 
 	savedContextVersion = 1;
+
+	gstate_c.Dirty(DIRTY_CULL_PLANES);
 }
 
 void GPUgstate::Save(u32_le *ptr) {
@@ -258,6 +247,8 @@ void GPUgstate::Restore(const u32_le *ptr) {
 
 	if (gpu)
 		gpu->ResetMatrices();
+
+	gstate_c.Dirty(DIRTY_CULL_PLANES);
 }
 
 bool vertTypeIsSkinningEnabled(u32 vertType) {
@@ -366,6 +357,9 @@ void GPUStateCache::DoState(PointerWrap &p) {
 	} else {
 		Do(p, savedContextVersion);
 	}
+
+	if (p.GetMode() == PointerWrap::MODE_READ)
+		gstate_c.Dirty(DIRTY_CULL_PLANES);
 }
 
 static const char *const gpuUseFlagNames[32] = {
@@ -375,7 +369,7 @@ static const char *const gpuUseFlagNames[32] = {
 	"GPU_USE_VS_RANGE_CULLING",
 	"GPU_USE_BLEND_MINMAX",
 	"GPU_USE_LOGIC_OP",
-	"N/A",
+	"GPU_USE_FRAGMENT_UBERSHADER",
 	"GPU_USE_TEXTURE_NPOT",
 	"GPU_USE_ANISOTROPY",
 	"GPU_USE_CLEAR_RAM_HACK",

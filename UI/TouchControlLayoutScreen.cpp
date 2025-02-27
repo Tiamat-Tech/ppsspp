@@ -81,10 +81,6 @@ public:
 	}
 
 protected:
-	float GetButtonOpacity() override {
-		float opacity = g_Config.iTouchButtonOpacity / 100.0f;
-		return std::max(0.5f, opacity);
-	}
 	const Bounds &screenBounds_;
 	float &theScale_;
 	float &x_, &y_;
@@ -116,8 +112,9 @@ public:
 
 	void Draw(UIContext &dc) override {
 		scale_ = theScale_*layoutAreaScale;
-		uint32_t colorBg = colorAlpha(GetButtonColor(), GetButtonOpacity());
-		uint32_t color = colorAlpha(0xFFFFFF, GetButtonOpacity());
+		float opacity = GamepadGetOpacity();
+		uint32_t colorBg = colorAlpha(GetButtonColor(), opacity);
+		uint32_t color = colorAlpha(0xFFFFFF, opacity);
 
 		int centerX = bounds_.centerX();
 		int centerY = bounds_.centerY();
@@ -244,8 +241,9 @@ public:
 
 	void Draw(UIContext &dc) override {
 		scale_ = theScale_*layoutAreaScale;
-		uint32_t colorBg = colorAlpha(GetButtonColor(), GetButtonOpacity());
-		uint32_t color = colorAlpha(0xFFFFFF, GetButtonOpacity());
+		float opacity = GamepadGetOpacity();
+		uint32_t colorBg = colorAlpha(GetButtonColor(), opacity);
+		uint32_t color = colorAlpha(0xFFFFFF, opacity);
 
 		static const float xoff[4] = {1, 0, -1, 0};
 		static const float yoff[4] = {0, 1, 0, -1};
@@ -263,7 +261,7 @@ public:
 			dc.Draw()->DrawImageRotated(dirImage, x, y, scale_, angle + PI, colorBg, false);
 			dc.Draw()->DrawImageRotated(ImageID("I_ARROW"), x2, y2, scale_, angle + PI, color);
 		}
-		scale_ = theScale_/layoutAreaScale;
+		scale_ = theScale_ / layoutAreaScale;
 	}
 
 	void GetContentDimensions(const UIContext &dc, float &w, float &h) const override {
@@ -286,14 +284,18 @@ public:
 	}
 
 	void Draw(UIContext &dc) override {
-		uint32_t colorBg = colorAlpha(GetButtonColor(), GetButtonOpacity());
-		uint32_t downBg = colorAlpha(0x00FFFFFF, GetButtonOpacity() * 0.5f);
+		scale_ = theScale_ * layoutAreaScale;
+
+		float opacity = GamepadGetOpacity();
+		uint32_t colorBg = colorAlpha(GetButtonColor(), opacity);
 
 		const ImageID stickImage = g_Config.iTouchButtonStyle ? ImageID("I_STICK_LINE") : ImageID("I_STICK");
 		const ImageID stickBg = g_Config.iTouchButtonStyle ? ImageID("I_STICK_BG_LINE") : ImageID("I_STICK_BG");
 
 		dc.Draw()->DrawImage(stickBg, bounds_.centerX(), bounds_.centerY(), scale_, colorBg, ALIGN_CENTER);
 		dc.Draw()->DrawImage(stickImage, bounds_.centerX(), bounds_.centerY(), scale_ * spacing_, colorBg, ALIGN_CENTER);
+
+		scale_ = theScale_ / layoutAreaScale;
 	}
 
 	float GetSpacing() const override { return spacing_ * 3; }
@@ -318,8 +320,8 @@ public:
 			float xOffset = bounds_.x;
 			float yOffset = bounds_.y;
 
-			dc.Draw()->Rect((x1+x2)/2 + xOffset - pixel_in_dps_x, y1 + yOffset, 3.0*pixel_in_dps_x, y2-y1, col);
-			dc.Draw()->Rect(x1 + xOffset, (y1+y2)/2 + yOffset - pixel_in_dps_y, x2-x1, 3.0*pixel_in_dps_y, col);
+			dc.Draw()->Rect((x1+x2)/2 + xOffset - g_display.pixel_in_dps, y1 + yOffset, 3.0f * g_display.pixel_in_dps, y2-y1, col);
+			dc.Draw()->Rect(x1 + xOffset, (y1+y2)/2 + yOffset - g_display.pixel_in_dps, x2-x1, 3.0f * g_display.pixel_in_dps, col);
 
 			for (int x = x1 + (x1+x2)/2 % g_Config.iTouchSnapGridSize; x < x2; x += g_Config.iTouchSnapGridSize)
 				dc.Draw()->vLine(x + xOffset, y1 + yOffset, y2 + yOffset, col);
@@ -371,8 +373,8 @@ public:
 	int mode_ = 0;
 };
 
-static Point ClampTo(const Point &p, const Bounds &b) {
-	return Point(clamp_value(p.x, b.x, b.x + b.w), clamp_value(p.y, b.y, b.y + b.h));
+static Point2D ClampTo(const Point2D &p, const Bounds &b) {
+	return Point2D(clamp_value(p.x, b.x, b.x + b.w), clamp_value(p.y, b.y, b.y + b.h));
 }
 
 bool ControlLayoutView::Touch(const TouchInput &touch) {
@@ -380,7 +382,6 @@ bool ControlLayoutView::Touch(const TouchInput &touch) {
 
 	if ((touch.flags & TOUCH_MOVE) && pickedControl_ != nullptr) {
 		if (mode_ == 0) {
-			const Bounds &controlBounds = pickedControl_->GetBounds();
 
 			// Allow placing the control halfway outside the play area.
 			Bounds validRange = this->GetBounds();
@@ -388,13 +389,15 @@ bool ControlLayoutView::Touch(const TouchInput &touch) {
 			validRange.x = 0.0f;
 			validRange.y = 0.0f;
 
-			// This make cure the controll is all inside the screen (commended out only half)
+			// TODO: Worth keeping?
+			// This make sure the control is all inside the screen (commented out only half)
+			// const Bounds &controlBounds = pickedControl_->GetBounds();
 			//validRange.x += controlBounds.w * 0.5f;
 			//validRange.w -= controlBounds.w;
 			//validRange.y += controlBounds.h * 0.5f;
 			//validRange.h -= controlBounds.h;
 
-			Point newPos;
+			Point2D newPos;
 			newPos.x = startObjectX_ + (touch.x - startDragX_);
 			newPos.y = startObjectY_ + (touch.y - startDragY_);
 			if (g_Config.bTouchSnapToGrid) {
@@ -447,6 +450,8 @@ bool ControlLayoutView::Touch(const TouchInput &touch) {
 }
 
 void ControlLayoutView::Draw(UIContext& dc) {
+	float opacity = g_Config.iTouchButtonOpacity / 100.0f;
+	GamepadUpdateOpacity(std::max(0.5f, opacity));
 	using namespace UI;
 	dc.FillRect(Drawable(0x80000000), bounds_);
 	dc.Flush();
@@ -454,7 +459,7 @@ void ControlLayoutView::Draw(UIContext& dc) {
 }
 
 void ControlLayoutView::CreateViews() {
-	using namespace CustomKey;
+	using namespace CustomKeyData;
 	const Bounds &bounds = GetBounds();
 	if (bounds.w == 0.0f || bounds.h == 0.0f) {
 		// Layout hasn't happened yet, return.
@@ -477,7 +482,6 @@ void ControlLayoutView::CreateViews() {
 	ImageID shoulderImage = g_Config.iTouchButtonStyle ? ImageID("I_SHOULDER_LINE") : ImageID("I_SHOULDER");
 	ImageID stickImage = g_Config.iTouchButtonStyle ? ImageID("I_STICK_LINE") : ImageID("I_STICK");
 	ImageID stickBg = g_Config.iTouchButtonStyle ? ImageID("I_STICK_BG_LINE") : ImageID("I_STICK_BG");
-	ImageID roundImage = g_Config.iTouchButtonStyle ? ImageID("I_ROUND_LINE") : ImageID("I_ROUND");
 
 	auto addDragDropButton = [&](ConfigTouchPos &pos, const char *key, ImageID bgImg, ImageID img) {
 		DragDropButton *b = nullptr;
@@ -510,26 +514,32 @@ void ControlLayoutView::CreateViews() {
 		controls_.push_back(new PSPStickDragDrop(g_Config.touchRightAnalogStick, "Right analog stick", stickBg, stickImage, bounds, g_Config.fRightStickHeadScale));
 	}
 
-	auto addDragComboKey = [&](ConfigTouchPos &pos, const char *key, const ConfigCustomButton& cfg) {
+	auto addDragCustomKey = [&](ConfigTouchPos &pos, const char *key, const ConfigCustomButton& cfg) {
 		DragDropButton *b = nullptr;
 		if (pos.show) {
-			b = new DragDropButton(pos, key, g_Config.iTouchButtonStyle == 0 ? comboKeyShapes[cfg.shape].i : comboKeyShapes[cfg.shape].l, comboKeyImages[cfg.image].i, bounds);
-			b->FlipImageH(comboKeyShapes[cfg.shape].f);
-			b->SetAngle(comboKeyImages[cfg.image].r, comboKeyShapes[cfg.shape].r);
+
+
+			b = new DragDropButton(pos, key, g_Config.iTouchButtonStyle == 0 ? customKeyShapes[cfg.shape].i : customKeyShapes[cfg.shape].l, customKeyImages[cfg.image].i, bounds);
+			b->FlipImageH(customKeyShapes[cfg.shape].f);
+			b->SetAngle(customKeyImages[cfg.image].r, customKeyShapes[cfg.shape].r);
 			controls_.push_back(b);
 		}
 		return b;
 	};
-	addDragComboKey(g_Config.touchCombo0, "Custom 1 button", g_Config.CustomKey0);
-	addDragComboKey(g_Config.touchCombo1, "Custom 2 button", g_Config.CustomKey1);
-	addDragComboKey(g_Config.touchCombo2, "Custom 3 button", g_Config.CustomKey2);
-	addDragComboKey(g_Config.touchCombo3, "Custom 4 button", g_Config.CustomKey3);
-	addDragComboKey(g_Config.touchCombo4, "Custom 5 button", g_Config.CustomKey4);
-	addDragComboKey(g_Config.touchCombo5, "Custom 6 button", g_Config.CustomKey5);
-	addDragComboKey(g_Config.touchCombo6, "Custom 7 button", g_Config.CustomKey6);
-	addDragComboKey(g_Config.touchCombo7, "Custom 8 button", g_Config.CustomKey7);
-	addDragComboKey(g_Config.touchCombo8, "Custom 9 button", g_Config.CustomKey8);
-	addDragComboKey(g_Config.touchCombo9, "Custom 10 button", g_Config.CustomKey9);
+
+	for (int i = 0; i < Config::CUSTOM_BUTTON_COUNT; i++) {
+		// Similar to GamepadEmu, we sanitize the images for valid values.
+		if (g_Config.CustomButton[i].shape >= ARRAY_SIZE(CustomKeyData::customKeyShapes)) {
+			g_Config.CustomButton[i].shape = 0;
+		}
+		if (g_Config.CustomButton[i].image >= ARRAY_SIZE(CustomKeyData::customKeyImages)) {
+			g_Config.CustomButton[i].image = 0;
+		}
+
+		char temp[64];
+		snprintf(temp, sizeof(temp), "Custom %d button", i);
+		addDragCustomKey(g_Config.touchCustom[i], temp, g_Config.CustomButton[i]);
+	}
 
 	for (size_t i = 0; i < controls_.size(); i++) {
 		Add(controls_[i]);
@@ -576,7 +586,7 @@ UI::EventReturn TouchControlLayoutScreen::OnVisibility(UI::EventParams &e) {
 }
 
 UI::EventReturn TouchControlLayoutScreen::OnReset(UI::EventParams &e) {
-	INFO_LOG(G3D, "Resetting touch control layout");
+	INFO_LOG(Log::G3D, "Resetting touch control layout");
 	g_Config.ResetControlLayout();
 	const Bounds &bounds = screenManager()->getUIContext()->GetBounds();
 	InitPadLayout(bounds.w, bounds.h);
@@ -618,8 +628,8 @@ void TouchControlLayoutScreen::CreateViews() {
 	const float leftColumnWidth = 200.0f;
 	layoutAreaScale = 1.0f - (leftColumnWidth + 10.0f) / std::max(bounds.w, 1.0f);
 
-	auto co = GetI18NCategory("Controls");
-	auto di = GetI18NCategory("Dialog");
+	auto co = GetI18NCategory(I18NCat::CONTROLS);
+	auto di = GetI18NCategory(I18NCat::DIALOG);
 
 	auto rootLayout = new LinearLayout(ORIENT_HORIZONTAL, new LayoutParams(FILL_PARENT, FILL_PARENT));
 	rootLayout->SetSpacing(0.0f);
@@ -636,7 +646,7 @@ void TouchControlLayoutScreen::CreateViews() {
 	mode_->OnChoice.Handle(this, &TouchControlLayoutScreen::OnMode);
 
 	CheckBox *snap = new CheckBox(&g_Config.bTouchSnapToGrid, di->T("Snap"));
-	PopupSliderChoice *gridSize = new PopupSliderChoice(&g_Config.iTouchSnapGridSize, 2, 256, di->T("Grid"), screenManager(), "");
+	PopupSliderChoice *gridSize = new PopupSliderChoice(&g_Config.iTouchSnapGridSize, 2, 256, 64, di->T("Grid"), screenManager(), "");
 	gridSize->SetEnabledPtr(&g_Config.bTouchSnapToGrid);
 
 	leftColumn->Add(mode_);

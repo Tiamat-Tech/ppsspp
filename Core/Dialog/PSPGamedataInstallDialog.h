@@ -19,6 +19,7 @@
 
 #include "Core/Dialog/PSPDialog.h"
 #include "Core/Dialog/SavedataParam.h"
+#include "Core/HLE/ErrorCodes.h"
 
 struct SceUtilityGamedataInstallParam {
 	pspUtilityDialogCommon common;
@@ -44,7 +45,7 @@ public:
 	void DoState(PointerWrap &p) override;
 
 	int Abort();
-	std::string GetGameDataInstallFileName(const SceUtilityGamedataInstallParam *param, std::string filename);
+	std::string GetGameDataInstallFileName(const SceUtilityGamedataInstallParam *param, const std::string &filename);
 
 protected:
 	// TODO: Manage status correctly.
@@ -54,6 +55,7 @@ protected:
 
 private:
 	void UpdateProgress();
+	void RenderProgress(int percentage);
 	void OpenNextFile();
 	void CopyCurrentFileData();
 	void CloseCurrentFile();

@@ -21,26 +21,13 @@
 #include "Common/Common.h"
 #include "Common/Data/Convert/ColorConv.h"
 #include "Common/LogReporting.h"
-#include "Common/StringUtils.h"
+#include "Common/Math/SIMDHeaders.h"
 #include "Core/Config.h"
 #include "GPU/Common/TextureDecoder.h"
-#include "GPU/GPUState.h"
 #include "GPU/Software/BinManager.h"
 #include "GPU/Software/Rasterizer.h"
 #include "GPU/Software/RasterizerRegCache.h"
 #include "GPU/Software/Sampler.h"
-
-#if defined(_M_SSE)
-#include <emmintrin.h>
-#endif
-
-#if PPSSPP_ARCH(ARM_NEON)
-#if defined(_MSC_VER) && PPSSPP_ARCH(ARM64)
-#include <arm64_neon.h>
-#else
-#include <arm_neon.h>
-#endif
-#endif
 
 using namespace Math3D;
 using namespace Rasterizer;
@@ -109,12 +96,14 @@ FetchFunc GetFetchFunc(SamplerID id, BinManager *binner) {
 thread_local SamplerJitCache::LastCache SamplerJitCache::lastFetch_;
 thread_local SamplerJitCache::LastCache SamplerJitCache::lastNearest_;
 thread_local SamplerJitCache::LastCache SamplerJitCache::lastLinear_;
+int SamplerJitCache::clearGen_ = 0;
 
 // 256k should be enough.
 SamplerJitCache::SamplerJitCache() : Rasterizer::CodeBlock(1024 * 64 * 4), cache_(64) {
 	lastFetch_.gen = -1;
 	lastNearest_.gen = -1;
 	lastLinear_.gen = -1;
+	clearGen_++;
 }
 
 void SamplerJitCache::Clear() {
@@ -164,7 +153,7 @@ void SamplerJitCache::Flush() {
 	for (const auto &queued : compileQueue_) {
 		// Might've been compiled after enqueue, but before now.
 		size_t queuedKey = std::hash<SamplerID>()(queued);
-		if (!cache_.Get(queuedKey))
+		if (!cache_.ContainsKey(queuedKey))
 			Compile(queued);
 	}
 	compileQueue_.clear();
@@ -172,9 +161,11 @@ void SamplerJitCache::Flush() {
 
 NearestFunc SamplerJitCache::GetByID(const SamplerID &id, size_t key, BinManager *binner) {
 	std::unique_lock<std::mutex> guard(jitCacheLock);
-	auto it = cache_.Get(key);
-	if (it != nullptr)
-		return it;
+	
+	NearestFunc func;
+	if (cache_.Get(key, &func)) {
+		return func;
+	}
 
 	if (!binner) {
 		// Can't compile, let's try to do it later when there's an opportunity.
@@ -189,16 +180,20 @@ NearestFunc SamplerJitCache::GetByID(const SamplerID &id, size_t key, BinManager
 	for (const auto &queued : compileQueue_) {
 		// Might've been compiled after enqueue, but before now.
 		size_t queuedKey = std::hash<SamplerID>()(queued);
-		if (!cache_.Get(queuedKey))
+		if (!cache_.ContainsKey(queuedKey))
 			Compile(queued);
 	}
 	compileQueue_.clear();
 
-	if (!cache_.Get(key))
+	if (!cache_.ContainsKey(key))
 		Compile(id);
 
 	// Okay, should be there now.
-	return cache_.Get(key);
+	if (cache_.Get(key, &func)) {
+		return func;
+	} else {
+		return nullptr;
+	}
 }
 
 NearestFunc SamplerJitCache::GetNearest(const SamplerID &id, BinManager *binner) {
@@ -274,13 +269,13 @@ static inline int GetPixelDataOffset(uint32_t row_pitch_pixels, uint32_t u, uint
 	if (!swizzled)
 		return (v * (row_pitch_pixels * texel_size_bits >> 3)) + (u * texel_size_bits >> 3);
 
-	const int tile_size_bits = 32;
-	const int tiles_in_block_horizontal = 4;
-	const int tiles_in_block_vertical = 8;
+	const uint32_t tile_size_bits = 32;
+	const uint32_t tiles_in_block_horizontal = 4;
+	const uint32_t tiles_in_block_vertical = 8;
 
-	int texels_per_tile = tile_size_bits / texel_size_bits;
-	int tile_u = u / texels_per_tile;
-	int tile_idx = (v % tiles_in_block_vertical) * (tiles_in_block_horizontal) +
+	constexpr uint32_t texels_per_tile = tile_size_bits / texel_size_bits;
+	uint32_t tile_u = u / texels_per_tile;
+	uint32_t tile_idx = (v % tiles_in_block_vertical) * (tiles_in_block_horizontal) +
 	// TODO: not sure if the *texel_size_bits/8 factor is correct
 					(v / tiles_in_block_vertical) * ((row_pitch_pixels*texel_size_bits/(tile_size_bits))*tiles_in_block_vertical) +
 					(tile_u % tiles_in_block_horizontal) +
@@ -306,7 +301,7 @@ static inline u32 LookupColor(unsigned int index, unsigned int level, const Samp
 		return samplerID.cached.clut32[index + clutSharingOffset];
 
 	default:
-		ERROR_LOG_REPORT(G3D, "Software: Unsupported palette format: %x", samplerID.ClutFmt());
+		ERROR_LOG_REPORT(Log::G3D, "Software: Unsupported palette format: %x", samplerID.ClutFmt());
 		return 0;
 	}
 }
@@ -406,27 +401,27 @@ inline static Nearest4 SOFTRAST_CALL SampleNearest(const int u[N], const int v[N
 
 	case GE_TFMT_DXT1:
 		for (int i = 0; i < N; ++i) {
-			const DXT1Block *block = (const DXT1Block *)srcptr + (v[i] / 4) * (texbufw / 4) + (u[i] / 4);
-			res.v[i] = GetDXT1Texel(block, u[i] % 4, v[i] % 4);
+			const DXT1Block *block = (const DXT1Block *)srcptr + (v[i] >> 2) * (texbufw >> 2) + (u[i] >> 2);
+			res.v[i] = GetDXT1Texel(block, u[i] & 3, v[i] & 3);
 		}
 		return res;
 
 	case GE_TFMT_DXT3:
 		for (int i = 0; i < N; ++i) {
-			const DXT3Block *block = (const DXT3Block *)srcptr + (v[i] / 4) * (texbufw / 4) + (u[i] / 4);
-			res.v[i] = GetDXT3Texel(block, u[i] % 4, v[i] % 4);
+			const DXT3Block *block = (const DXT3Block *)srcptr + (v[i] >> 2) * (texbufw >> 2) + (u[i] >> 2);
+			res.v[i] = GetDXT3Texel(block, u[i] & 3, v[i] & 3);
 		}
 		return res;
 
 	case GE_TFMT_DXT5:
 		for (int i = 0; i < N; ++i) {
-			const DXT5Block *block = (const DXT5Block *)srcptr + (v[i] / 4) * (texbufw / 4) + (u[i] / 4);
-			res.v[i] = GetDXT5Texel(block, u[i] % 4, v[i] % 4);
+			const DXT5Block *block = (const DXT5Block *)srcptr + (v[i] >> 2) * (texbufw >> 2) + (u[i] >> 2);
+			res.v[i] = GetDXT5Texel(block, u[i] & 3, v[i] & 3);
 		}
 		return res;
 
 	default:
-		ERROR_LOG_REPORT(G3D, "Software: Unsupported texture format: %x", samplerID.TexFmt());
+		ERROR_LOG_REPORT(Log::G3D, "Software: Unsupported texture format: %x", samplerID.TexFmt());
 		memset(res.v, 0, sizeof(res.v));
 		return res;
 	}
@@ -611,7 +606,7 @@ static Vec4IntResult SOFTRAST_CALL SampleNearest(float s, float t, Vec4IntArg pr
 		GetTexelCoordinates(level + 1, s, t, u, v, samplerID);
 		Vec4<int> c1 = Vec4<int>::FromRGBA(SampleNearest<1>(&u, &v, tptr[1], bufw[1], level + 1, samplerID).v[0]);
 
-		c0 = (c1 * levelFrac + c0 * (16 - levelFrac)) / 16;
+		c0 = (c1 * levelFrac + c0 * (16 - levelFrac)) >> 4;
 	}
 
 	return GetTextureFunctionOutput(prim_color, ToVec4IntArg(c0), samplerID);
@@ -718,21 +713,43 @@ static Vec4IntResult SOFTRAST_CALL SampleLinearLevel(float s, float t, const u8 
 	const Vec4<int> u = GetTexelCoordinatesQuadS(texlevel, s, frac_u, samplerID);
 	const Vec4<int> v = GetTexelCoordinatesQuadT(texlevel, t, frac_v, samplerID);
 	Nearest4 c = SampleNearest<4>(u.AsArray(), v.AsArray(), tptr[0], bufw[0], texlevel, samplerID);
-
+#ifdef _M_SSE
+	__m128i zero = _mm_setzero_si128();
+	__m128i samples = _mm_loadu_si128((const __m128i*)(c.v));
+	__m128i top = _mm_unpacklo_epi8(samples, zero);
+	__m128i bot = _mm_unpackhi_epi8(samples, zero);
+	// I just a want reasonably efficient
+	// __m128i mul_u = _mm_setr_epi16(0x10 - frac_u, 0x10 - frac_u, 0x10 - frac_u, 0x10 - frac_u, frac_u, frac_u, frac_u, frac_u);
+	// GCC/clang do something decent for that, MSVC - not so much.
+	// Hence this. (0x10 - frac_u) is expressed as (frac_u ^ 0xF) + 1,
+	// which REQUIRES 0 <= frac_u < 0x10.
+	__m128i mul_u =	_mm_set1_epi16(frac_u);
+	mul_u = _mm_xor_si128(mul_u, _mm_setr_epi16(0xF, 0xF, 0xF, 0xF, 0x0, 0x0, 0x0, 0x0));
+	mul_u = _mm_add_epi16(mul_u, _mm_setr_epi16(0x1, 0x1, 0x1, 0x1, 0x0, 0x0, 0x0, 0x0));
+	top = _mm_mullo_epi16(top, _mm_set1_epi16(0x10 - frac_v));
+	bot = _mm_mullo_epi16(bot, _mm_set1_epi16(frac_v));
+	__m128i sum = _mm_add_epi16(top, bot);
+	sum = _mm_mullo_epi16(sum, mul_u);
+	sum = _mm_add_epi16(sum, _mm_shuffle_epi32(sum, _MM_SHUFFLE(3, 2, 3, 2)));
+	sum = _mm_srli_epi16(sum, 8);
+	sum = _mm_unpacklo_epi16(sum, zero);
+	return sum;
+#else
 	Vec4<int> texcolor_tl = Vec4<int>::FromRGBA(c.v[0]);
 	Vec4<int> texcolor_tr = Vec4<int>::FromRGBA(c.v[1]);
 	Vec4<int> texcolor_bl = Vec4<int>::FromRGBA(c.v[2]);
 	Vec4<int> texcolor_br = Vec4<int>::FromRGBA(c.v[3]);
 	Vec4<int> top = texcolor_tl * (0x10 - frac_u) + texcolor_tr * frac_u;
 	Vec4<int> bot = texcolor_bl * (0x10 - frac_u) + texcolor_br * frac_u;
-	return ToVec4IntResult((top * (0x10 - frac_v) + bot * frac_v) / (16 * 16));
+	return ToVec4IntResult((top * (0x10 - frac_v) + bot * frac_v) >> (4 + 4));
+#endif
 }
 
 static Vec4IntResult SOFTRAST_CALL SampleLinear(float s, float t, Vec4IntArg prim_color, const u8 *const *tptr, const uint16_t *bufw, int texlevel, int levelFrac, const SamplerID &samplerID) {
 	Vec4<int> c0 = SampleLinearLevel(s, t, tptr, bufw, texlevel, samplerID);
 	if (levelFrac) {
 		const Vec4<int> c1 = SampleLinearLevel(s, t, tptr + 1, bufw + 1, texlevel + 1, samplerID);
-		c0 = (c1 * levelFrac + c0 * (16 - levelFrac)) / 16;
+		c0 = (c1 * levelFrac + c0 * (16 - levelFrac)) >> 4;
 	}
 	return GetTextureFunctionOutput(prim_color, ToVec4IntArg(c0), samplerID);
 }

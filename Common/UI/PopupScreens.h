@@ -1,19 +1,28 @@
 #pragma once
 
+#include "Common/System/Request.h"
+
+#include "Common/Data/Text/I18n.h"
 #include "Common/UI/UIScreen.h"
 #include "Common/UI/UI.h"
 #include "Common/UI/View.h"
 #include "Common/UI/ScrollView.h"
 
+// from StringUtils
+enum class StringRestriction;
+
 namespace UI {
+
+static const float NO_DEFAULT_FLOAT = -1000000.0f;
+static const int NO_DEFAULT_INT = -1000000;
 
 class ListPopupScreen : public PopupScreen {
 public:
-	ListPopupScreen(std::string title) : PopupScreen(title) {}
-	ListPopupScreen(std::string title, const std::vector<std::string> &items, int selected, std::function<void(int)> callback, bool showButtons = false)
+	ListPopupScreen(std::string_view title) : PopupScreen(title) {}
+	ListPopupScreen(std::string_view title, const std::vector<std::string> &items, int selected, std::function<void(int)> callback, bool showButtons = false)
 		: PopupScreen(title, "OK", "Cancel"), adaptor_(items, selected), callback_(callback), showButtons_(showButtons) {
 	}
-	ListPopupScreen(std::string title, const std::vector<std::string> &items, int selected, bool showButtons = false)
+	ListPopupScreen(std::string_view title, const std::vector<std::string> &items, int selected, bool showButtons = false)
 		: PopupScreen(title, "OK", "Cancel"), adaptor_(items, selected), showButtons_(showButtons) {
 	}
 
@@ -23,8 +32,11 @@ public:
 	std::string GetChoiceString() const {
 		return adaptor_.GetTitle(listView_->GetSelected());
 	}
-	void SetHiddenChoices(std::set<int> hidden) {
+	void SetHiddenChoices(const std::set<int> &hidden) {
 		hidden_ = hidden;
+	}
+	void SetChoiceIcons(const std::map<int, ImageID> &icons) {
+		icons_ = icons;
 	}
 	const char *tag() const override { return "listpopup"; }
 
@@ -43,12 +55,16 @@ private:
 	std::function<void(int)> callback_;
 	bool showButtons_ = false;
 	std::set<int> hidden_;
+	std::map<int, ImageID> icons_;
 };
 
 class MessagePopupScreen : public PopupScreen {
 public:
-	MessagePopupScreen(std::string title, std::string message, std::string button1, std::string button2, std::function<void(bool)> callback)
+	MessagePopupScreen(std::string_view title, std::string message, std::string button1, std::string button2, std::function<void(bool)> callback)
 		: PopupScreen(title, button1, button2), message_(message), callback_(callback) {}
+
+	const char *tag() const override { return "MessagePopupScreen"; }
+
 	UI::Event OnChoice;
 
 protected:
@@ -64,8 +80,8 @@ private:
 
 class SliderPopupScreen : public PopupScreen {
 public:
-	SliderPopupScreen(int *value, int minValue, int maxValue, const std::string &title, int step = 1, const std::string &units = "")
-		: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), minValue_(minValue), maxValue_(maxValue), step_(step) {}
+	SliderPopupScreen(int *value, int minValue, int maxValue, int defaultValue, std::string_view title, int step, std::string_view units, bool liveUpdate)
+		: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), minValue_(minValue), maxValue_(maxValue), defaultValue_(defaultValue), step_(step), liveUpdate_(liveUpdate) {}
 	void CreatePopupContents(ViewGroup *parent) override;
 
 	void SetNegativeDisable(const std::string &str) {
@@ -83,6 +99,7 @@ private:
 	EventReturn OnTextChange(EventParams &params);
 	EventReturn OnSliderChange(EventParams &params);
 	void OnCompleted(DialogResult result) override;
+	void UpdateTextBox();
 	Slider *slider_ = nullptr;
 	UI::TextEdit *edit_ = nullptr;
 	std::string units_;
@@ -91,15 +108,17 @@ private:
 	int sliderValue_ = 0;
 	int minValue_;
 	int maxValue_;
+	int defaultValue_;
 	int step_;
+	bool liveUpdate_;
 	bool changing_ = false;
 	bool disabled_ = false;
 };
 
 class SliderFloatPopupScreen : public PopupScreen {
 public:
-	SliderFloatPopupScreen(float *value, float minValue, float maxValue, const std::string &title, float step = 1.0f, const std::string &units = "", bool liveUpdate = false)
-		: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), originalValue_(*value), minValue_(minValue), maxValue_(maxValue), step_(step), liveUpdate_(liveUpdate) {}
+	SliderFloatPopupScreen(float *value, float minValue, float maxValue, float defaultValue, std::string_view title, float step = 1.0f, std::string_view units = "", bool liveUpdate = false)
+		: PopupScreen(title, "OK", "Cancel"), units_(units), value_(value), originalValue_(*value), minValue_(minValue), maxValue_(maxValue), defaultValue_(defaultValue), step_(step), liveUpdate_(liveUpdate) {}
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 
 	const char *tag() const override { return "SliderFloatPopup"; }
@@ -112,6 +131,7 @@ private:
 	EventReturn OnTextChange(EventParams &params);
 	EventReturn OnSliderChange(EventParams &params);
 	void OnCompleted(DialogResult result) override;
+	void UpdateTextBox();
 	UI::SliderFloat *slider_ = nullptr;
 	UI::TextEdit *edit_ = nullptr;
 	std::string units_;
@@ -120,6 +140,7 @@ private:
 	float *value_;
 	float minValue_;
 	float maxValue_;
+	float defaultValue_;
 	float step_;
 	bool changing_ = false;
 	bool liveUpdate_;
@@ -127,11 +148,15 @@ private:
 
 class TextEditPopupScreen : public PopupScreen {
 public:
-	TextEditPopupScreen(std::string *value, const std::string &placeholder, const std::string &title, int maxLen)
+	TextEditPopupScreen(std::string *value, std::string_view placeholder, std::string_view title, int maxLen)
 		: PopupScreen(title, "OK", "Cancel"), value_(value), placeholder_(placeholder), maxLen_(maxLen) {}
 	void CreatePopupContents(ViewGroup *parent) override;
 
 	const char *tag() const override { return "TextEditPopup"; }
+
+	void SetPasswordMasking(bool masking) {
+		passwordMasking_ = masking;
+	}
 
 	Event OnChange;
 
@@ -142,6 +167,7 @@ private:
 	std::string textEditValue_;
 	std::string placeholder_;
 	int maxLen_;
+	bool passwordMasking_ = false;
 };
 
 struct ContextMenuItem {
@@ -152,7 +178,7 @@ struct ContextMenuItem {
 // Once a selection has been made,
 class PopupContextMenuScreen : public PopupScreen {
 public:
-	PopupContextMenuScreen(const ContextMenuItem *items, size_t itemCount, I18NCategory *category, UI::View *sourceView);
+	PopupContextMenuScreen(const ContextMenuItem *items, size_t itemCount, I18NCat category, UI::View *sourceView);
 	void CreatePopupContents(ViewGroup *parent) override;
 
 	const char *tag() const override { return "ContextMenuPopup"; }
@@ -169,45 +195,36 @@ protected:
 private:
 	const ContextMenuItem *items_;
 	size_t itemCount_;
-	I18NCategory *category_;
+	I18NCat category_;
 	UI::View *sourceView_;
 	std::vector<bool> enabled_;
-};
-
-class AbstractChoiceWithValueDisplay : public UI::Choice {
-public:
-	AbstractChoiceWithValueDisplay(const std::string &text, LayoutParams *layoutParams = nullptr)
-		: Choice(text, layoutParams) {
-	}
-
-	void Draw(UIContext &dc) override;
-	void GetContentDimensionsBySpec(const UIContext &dc, MeasureSpec horiz, MeasureSpec vert, float &w, float &h) const override;
-
-protected:
-	virtual std::string ValueText() const = 0;
-
-	float CalculateValueScale(const UIContext &dc, const std::string &valueText, float availWidth) const;
 };
 
 // Reads and writes value to determine the current selection.
 class PopupMultiChoice : public AbstractChoiceWithValueDisplay {
 public:
-	PopupMultiChoice(int *value, const std::string &text, const char **choices, int minVal, int numChoices,
-		const char *category, ScreenManager *screenManager, UI::LayoutParams *layoutParams = nullptr)
+	PopupMultiChoice(int *value, std::string_view text, const char **choices, int minVal, int numChoices,
+		I18NCat category, ScreenManager *screenManager, UI::LayoutParams *layoutParams = nullptr)
 		: AbstractChoiceWithValueDisplay(text, layoutParams), value_(value), choices_(choices), minVal_(minVal), numChoices_(numChoices),
 		category_(category), screenManager_(screenManager) {
-		if (*value >= numChoices + minVal)
-			*value = numChoices + minVal - 1;
-		if (*value < minVal)
-			*value = minVal;
+		if (choices) {
+			// If choices is nullptr, we're being called from PopupMultiChoiceDynamic where value doesn't yet point to anything valid.
+			if (*value >= numChoices + minVal)
+				*value = numChoices + minVal - 1;
+			if (*value < minVal)
+				*value = minVal;
+			UpdateText();
+		}
 		OnClick.Handle(this, &PopupMultiChoice::HandleClick);
-		UpdateText();
 	}
 
 	void Update() override;
 
 	void HideChoice(int c) {
 		hidden_.insert(c);
+	}
+	void SetChoiceIcon(int c, ImageID id) {
+		icons_[c] = id;
 	}
 
 	UI::Event OnChoice;
@@ -225,20 +242,21 @@ private:
 	UI::EventReturn HandleClick(UI::EventParams &e);
 
 	void ChoiceCallback(int num);
-	virtual void PostChoiceCallback(int num) {}
+	virtual bool PostChoiceCallback(int num) { return true; }
 
-	const char *category_;
+	I18NCat category_;
 	ScreenManager *screenManager_;
 	std::string valueText_;
 	bool restoreFocus_ = false;
 	std::set<int> hidden_;
+	std::map<int, ImageID> icons_;
 };
 
 // Allows passing in a dynamic vector of strings. Saves the string.
 class PopupMultiChoiceDynamic : public PopupMultiChoice {
 public:
-	PopupMultiChoiceDynamic(std::string *value, const std::string &text, std::vector<std::string> choices,
-		const char *category, ScreenManager *screenManager, UI::LayoutParams *layoutParams = nullptr)
+	PopupMultiChoiceDynamic(std::string *value, std::string_view text, std::vector<std::string> choices,
+		I18NCat category, ScreenManager *screenManager, UI::LayoutParams *layoutParams = nullptr)
 		: UI::PopupMultiChoice(&valueInt_, text, nullptr, 0, (int)choices.size(), category, screenManager, layoutParams),
 		valueStr_(value) {
 		choices_ = new const char *[numChoices_];
@@ -260,8 +278,16 @@ public:
 	}
 
 protected:
-	void PostChoiceCallback(int num) override {
-		*valueStr_ = choices_[num];
+	bool PostChoiceCallback(int num) override {
+		if (!valueStr_) {
+			return true;
+		}
+		if (*valueStr_ != choices_[num]) {
+			*valueStr_ = choices_[num];
+			return true;
+		} else {
+			return false;
+		}
 	}
 
 private:
@@ -271,16 +297,17 @@ private:
 
 class PopupSliderChoice : public AbstractChoiceWithValueDisplay {
 public:
-	PopupSliderChoice(int *value, int minValue, int maxValue, const std::string &text, ScreenManager *screenManager, const std::string &units = "", LayoutParams *layoutParams = 0);
-	PopupSliderChoice(int *value, int minValue, int maxValue, const std::string &text, int step, ScreenManager *screenManager, const std::string &units = "", LayoutParams *layoutParams = 0);
+	PopupSliderChoice(int *value, int minValue, int maxValue, int defaultValue, std::string_view text, ScreenManager *screenManager, std::string_view units = "", LayoutParams *layoutParams = 0);
+	PopupSliderChoice(int *value, int minValue, int maxValue, int defaultValue, std::string_view text, int step, ScreenManager *screenManager, std::string_view units = "", LayoutParams *layoutParams = 0);
 
-	void SetFormat(const char *fmt) {
-		fmt_ = fmt;
-	}
-	void SetZeroLabel(const std::string &str) {
+	void SetFormat(std::string_view fmt);
+	void SetZeroLabel(std::string_view str) {
 		zeroLabel_ = str;
 	}
-	void SetNegativeDisable(const std::string &str) {
+	void SetLiveUpdate(bool update) {
+		liveUpdate_ = update;
+	}
+	void SetNegativeDisable(std::string_view str) {
 		negativeLabel_ = str;
 	}
 
@@ -296,23 +323,23 @@ private:
 	int *value_;
 	int minValue_;
 	int maxValue_;
+	int defaultValue_;
 	int step_;
-	const char *fmt_;
+	std::string fmt_;
 	std::string zeroLabel_;
 	std::string negativeLabel_;
 	std::string units_;
 	ScreenManager *screenManager_;
 	bool restoreFocus_ = false;
+	bool liveUpdate_ = false;
 };
 
 class PopupSliderChoiceFloat : public AbstractChoiceWithValueDisplay {
 public:
-	PopupSliderChoiceFloat(float *value, float minValue, float maxValue, const std::string &text, ScreenManager *screenManager, const std::string &units = "", LayoutParams *layoutParams = 0);
-	PopupSliderChoiceFloat(float *value, float minValue, float maxValue, const std::string &text, float step, ScreenManager *screenManager, const std::string &units = "", LayoutParams *layoutParams = 0);
+	PopupSliderChoiceFloat(float *value, float minValue, float maxValue, float defaultValue, std::string_view text, ScreenManager *screenManager, std::string_view units = "", LayoutParams *layoutParams = 0);
+	PopupSliderChoiceFloat(float *value, float minValue, float maxValue, float defaultValue, std::string_view text, float step, ScreenManager *screenManager, std::string_view units = "", LayoutParams *layoutParams = 0);
 
-	void SetFormat(const char *fmt) {
-		fmt_ = fmt;
-	}
+	void SetFormat(std::string_view fmt);
 	void SetZeroLabel(const std::string &str) {
 		zeroLabel_ = str;
 	}
@@ -334,8 +361,9 @@ private:
 	float *value_;
 	float minValue_;
 	float maxValue_;
+	float defaultValue_;
 	float step_;
-	const char *fmt_;
+	std::string fmt_;
 	std::string zeroLabel_;
 	std::string units_;
 	ScreenManager *screenManager_;
@@ -344,11 +372,17 @@ private:
 	bool hasDropShadow_ = true;
 };
 
+// NOTE: This one will defer to a system-native dialog if possible.
 class PopupTextInputChoice : public AbstractChoiceWithValueDisplay {
 public:
-	PopupTextInputChoice(std::string *value, const std::string &title, const std::string &placeholder, int maxLen, ScreenManager *screenManager, LayoutParams *layoutParams = 0);
+	PopupTextInputChoice(RequesterToken token, std::string *value, std::string_view title, std::string_view placeholder, int maxLen, ScreenManager *screenManager, LayoutParams *layoutParams = 0);
 
 	Event OnChange;
+
+	void SetRestriction(StringRestriction restriction, int minLength) {
+		restriction_ = restriction;
+		minLen_ = minLength;
+	}
 
 protected:
 	std::string ValueText() const override;
@@ -356,23 +390,26 @@ protected:
 private:
 	EventReturn HandleClick(EventParams &e);
 	EventReturn HandleChange(EventParams &e);
+	RequesterToken token_;
 	ScreenManager *screenManager_;
 	std::string *value_;
 	std::string placeHolder_;
 	std::string defaultText_;
 	int maxLen_;
+	int minLen_ = 0;
 	bool restoreFocus_ = false;
+	StringRestriction restriction_;
 };
 
 class ChoiceWithValueDisplay : public AbstractChoiceWithValueDisplay {
 public:
-	ChoiceWithValueDisplay(int *value, const std::string &text, LayoutParams *layoutParams = 0)
+	ChoiceWithValueDisplay(int *value, std::string_view text, LayoutParams *layoutParams = 0)
 		: AbstractChoiceWithValueDisplay(text, layoutParams), iValue_(value) {}
 
-	ChoiceWithValueDisplay(std::string *value, const std::string &text, const char *category, LayoutParams *layoutParams = 0)
+	ChoiceWithValueDisplay(std::string *value, std::string_view text, I18NCat category, LayoutParams *layoutParams = 0)
 		: AbstractChoiceWithValueDisplay(text, layoutParams), sValue_(value), category_(category) {}
 
-	ChoiceWithValueDisplay(std::string *value, const std::string &text, std::string(*translateCallback)(const char *value), LayoutParams *layoutParams = 0)
+	ChoiceWithValueDisplay(std::string *value, std::string_view text, std::string(*translateCallback)(std::string_view value), LayoutParams *layoutParams = 0)
 		: AbstractChoiceWithValueDisplay(text, layoutParams), sValue_(value), translateCallback_(translateCallback) {
 	}
 
@@ -381,8 +418,35 @@ private:
 
 	std::string *sValue_ = nullptr;
 	int *iValue_ = nullptr;
-	const char *category_ = nullptr;
-	std::string(*translateCallback_)(const char *value) = nullptr;
+	I18NCat category_ = I18NCat::CATEGORY_COUNT;
+	std::string(*translateCallback_)(std::string_view value) = nullptr;
+};
+
+enum class FileChooserFileType {
+	WAVE_FILE,
+};
+
+class FileChooserChoice : public AbstractChoiceWithValueDisplay {
+public:
+	FileChooserChoice(RequesterToken token, std::string *value, std::string_view title, BrowseFileType fileType, LayoutParams *layoutParams = nullptr);
+	std::string ValueText() const override;
+
+	Event OnChange;
+
+private:
+	std::string *value_;
+};
+
+class FolderChooserChoice : public AbstractChoiceWithValueDisplay {
+public:
+	FolderChooserChoice(RequesterToken token, std::string *value, std::string_view title, LayoutParams *layoutParams = nullptr);
+	std::string ValueText() const override;
+
+	Event OnChange;
+
+private:
+	std::string *value_;
+	RequesterToken token_;
 };
 
 }  // namespace UI

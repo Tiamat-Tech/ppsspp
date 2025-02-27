@@ -20,6 +20,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cstdint>
 #include <ctime>
 
 #include "Common.h"
@@ -34,6 +35,11 @@ enum FileAccess {
 	FILEACCESS_CREATE   = 8,
 	FILEACCESS_TRUNCATE = 16,
 	FILEACCESS_EXCL     = 32,
+
+	FILEACCESS_PSP_FLAGS = 63,  // Sum of all the above.
+
+	// Non-PSP flags
+	FILEACCESS_PPSSPP_QUIET = 128,
 };
 
 enum FileMove {
@@ -64,6 +70,7 @@ enum class FileSystemFlags {
 	CARD = 4,
 	FLASH = 8,
 	STRIP_PSP = 16,
+	CASE_SENSITIVE = 32,
 };
 ENUM_CLASS_BITOPS(FileSystemFlags);
 
@@ -77,6 +84,10 @@ public:
 class SequentialHandleAllocator : public IHandleAllocator {
 public:
 	SequentialHandleAllocator() : handle_(1) {}
+
+	SequentialHandleAllocator(SequentialHandleAllocator &) = delete;
+	void operator =(SequentialHandleAllocator &) = delete;
+
 	u32 GetNewHandle() override {
 		u32 res = handle_++;
 		if (handle_ < 0) {
@@ -134,9 +145,10 @@ public:
 	virtual bool     RemoveFile(const std::string &filename) = 0;
 	virtual int      Ioctl(u32 handle, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen, int &usec) = 0;
 	virtual PSPDevType DevType(u32 handle) = 0;
-	virtual FileSystemFlags Flags() = 0;
-	virtual u64      FreeSpace(const std::string &path) = 0;
+	virtual FileSystemFlags Flags() const = 0;
+	virtual u64      FreeDiskSpace(const std::string &path) = 0;
 	virtual bool     ComputeRecursiveDirSizeIfFast(const std::string &path, int64_t *size) = 0;
+	virtual void     Describe(char *buf, size_t size) const = 0;
 };
 
 
@@ -164,9 +176,10 @@ public:
 	bool RemoveFile(const std::string &filename) override {return false;}
 	int Ioctl(u32 handle, u32 cmd, u32 indataPtr, u32 inlen, u32 outdataPtr, u32 outlen, int &usec) override { return SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED; }
 	PSPDevType DevType(u32 handle) override { return PSPDevType::INVALID; }
-	FileSystemFlags Flags() override { return FileSystemFlags::NONE; }
-	u64 FreeSpace(const std::string &path) override { return 0; }
+	FileSystemFlags Flags() const override { return FileSystemFlags::NONE; }
+	u64 FreeDiskSpace(const std::string &path) override { return 0; }
 	bool ComputeRecursiveDirSizeIfFast(const std::string &path, int64_t *size) override { return false; }
+	void Describe(char *buf, size_t size) const override { snprintf(buf, size, "%s", "Empty"); }
 };
 
 

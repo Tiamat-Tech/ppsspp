@@ -27,7 +27,6 @@
 #include "Common/Data/Format/PNGLoad.h"
 #include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
-#include "Core/Host.h"
 #include "Core/Loaders.h"
 
 #include "GPU/GPUState.h"
@@ -272,7 +271,7 @@ bool CompareOutput(const Path &bootFilename, const std::string &output, bool ver
 				printf("%s", output.c_str());
 				printf("============== expected output:\n");
 				std::string fullExpected;
-				if (File::ReadFileToString(true, expect_filename, fullExpected))
+				if (File::ReadTextFileToString(expect_filename, &fullExpected))
 					printf("%s", fullExpected.c_str());
 				printf("===============================\n");
 			}

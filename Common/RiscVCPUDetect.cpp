@@ -27,7 +27,9 @@
 #include <cstring>
 #include <set>
 #include <sstream>
+#if defined(HAVE_GETAUXVAL) || defined(HAVE_ELF_AUX_INFO)
 #include <sys/auxv.h>
+#endif
 #include <vector>
 #include "Common/Common.h"
 #include "Common/CPUDetect.h"
@@ -40,6 +42,7 @@
 const char procfile[] = "/proc/cpuinfo";
 // https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-devices-system-cpu
 const char syscpupresentfile[] = "/sys/devices/system/cpu/present";
+const char firmwarefile[] = "/sys/firmware/devicetree/base/compatible";
 
 class RiscVCPUInfoParser {
 public:
@@ -49,14 +52,17 @@ public:
 	int TotalLogicalCount();
 
 	std::string ISAString();
+	bool FirmwareMatchesCompatible(const std::string &str);
 
 private:
 	std::vector<std::vector<std::string>> cores_;
+	std::vector<std::string> firmware_;
+	bool firmwareLoaded_ = false;
 };
 
 RiscVCPUInfoParser::RiscVCPUInfoParser() {
 	std::string procdata, line;
-	if (!File::ReadFileToString(true, Path(procfile), procdata))
+	if (!File::ReadSysTextFileToString(Path(procfile), &procdata))
 		return;
 
 	std::istringstream file(procdata);
@@ -76,7 +82,7 @@ RiscVCPUInfoParser::RiscVCPUInfoParser() {
 
 int RiscVCPUInfoParser::ProcessorCount() {
 	// Not using present as that counts the logical CPUs (aka harts.)
-	static const char *marker = "processor\t: ";
+	static const char * const marker = "processor\t: ";
 	std::set<std::string> processors;
 	for (auto core : cores_) {
 		for (auto line : core) {
@@ -90,7 +96,7 @@ int RiscVCPUInfoParser::ProcessorCount() {
 
 int RiscVCPUInfoParser::TotalLogicalCount() {
 	std::string presentData, line;
-	bool presentSuccess = File::ReadFileToString(true, Path(syscpupresentfile), presentData);
+	bool presentSuccess = File::ReadSysTextFileToString(Path(syscpupresentfile), &presentData);
 	if (presentSuccess) {
 		std::istringstream presentFile(presentData);
 
@@ -103,7 +109,7 @@ int RiscVCPUInfoParser::TotalLogicalCount() {
 			return high - low + 1;
 	}
 
-	static const char *marker = "hart\t\t: ";
+	static const char * const marker = "hart\t\t: ";
 	std::set<std::string> harts;
 	for (auto core : cores_) {
 		for (auto line : core) {
@@ -116,7 +122,7 @@ int RiscVCPUInfoParser::TotalLogicalCount() {
 }
 
 std::string RiscVCPUInfoParser::ISAString() {
-	static const char *marker = "isa\t\t: ";
+	static const char * const marker = "isa\t\t: ";
 	for (auto core : cores_) {
 		for (auto line : core) {
 			if (line.find(marker) != line.npos)
@@ -125,6 +131,25 @@ std::string RiscVCPUInfoParser::ISAString() {
 	}
 
 	return "Unknown";
+}
+
+bool RiscVCPUInfoParser::FirmwareMatchesCompatible(const std::string &str) {
+	if (!firmwareLoaded_) {
+		firmwareLoaded_ = true;
+
+		std::string data;
+		if (!File::ReadSysTextFileToString(Path(firmwarefile), &data))
+			return false;
+
+		SplitString(data, '\0', firmware_);
+	}
+
+	for (auto compatible : firmware_) {
+		if (compatible == str)
+			return true;
+	}
+
+	return false;
 }
 #endif
 
@@ -170,24 +195,38 @@ void CPUInfo::Detect()
 		logical_cpu_count = 1;
 
 	truncate_cpy(cpu_string, parser.ISAString().c_str());
+
+	// A number of CPUs support a limited set of bitmanip.  It's not all U74, so we use SOC for now...
+	if (parser.FirmwareMatchesCompatible("starfive,jh7110")) {
+		RiscV_Zba = true;
+		RiscV_Zbb = true;
+	}
 #endif
 
+#if defined(HAVE_GETAUXVAL) || defined(HAVE_ELF_AUX_INFO)
+#ifdef HAVE_ELF_AUX_INFO
+	unsigned long hwcap = 0;
+	elf_aux_info(AT_HWCAP, &hwcap, sizeof(hwcap));
+#else
 	unsigned long hwcap = getauxval(AT_HWCAP);
+#endif
 	RiscV_M = ExtensionSupported(hwcap, 'M');
 	RiscV_A = ExtensionSupported(hwcap, 'A');
 	RiscV_F = ExtensionSupported(hwcap, 'F');
 	RiscV_D = ExtensionSupported(hwcap, 'D');
 	RiscV_C = ExtensionSupported(hwcap, 'C');
 	RiscV_V = ExtensionSupported(hwcap, 'V');
-	RiscV_B = ExtensionSupported(hwcap, 'B');
-	// Let's assume for now...
-	RiscV_Zicsr = RiscV_M && RiscV_A && RiscV_F && RiscV_D;
-
-	// A number of CPUs support a limited set of B.
-	if (!strcmp(brand_string, "sifive,u74-mc")) {
-		RiscV_Zba = true;
-		RiscV_Zbb = true;
-	}
+#elif defined(__OpenBSD__)
+	/* OpenBSD uses RV64GC */
+	RiscV_M = true;
+	RiscV_A = true;
+	RiscV_F = true;
+	RiscV_D = true;
+	RiscV_C = true;
+	RiscV_V = false;
+#endif
+	// We assume as in RVA20U64 that F means Zicsr is available.
+	RiscV_Zicsr = RiscV_F;
 
 #ifdef USE_CPU_FEATURES
 	cpu_features::RiscvInfo info = cpu_features::GetRiscvInfo();
@@ -197,7 +236,9 @@ void CPUInfo::Detect()
 	RiscV_F = info.features.F;
 	RiscV_D = info.features.D;
 	RiscV_C = info.features.C;
-	RiscV_Zicsr = info.features.Zicsr;
+	RiscV_V = info.features.V;
+	// Seems to be wrong sometimes, assume we have it if we have F.
+	RiscV_Zicsr = info.features.Zicsr || info.features.F;
 
 	truncate_cpy(brand_string, info.uarch);
 #endif
@@ -217,11 +258,17 @@ std::vector<std::string> CPUInfo::Features() {
 		{ RiscV_D, "Double" },
 		{ RiscV_C, "Compressed" },
 		{ RiscV_V, "Vector" },
-		{ RiscV_B, "Bitmanip" },
-		{ RiscV_Zba, "Zba" },
-		{ RiscV_Zbb, "Zbb" },
-		{ RiscV_Zbc, "Zbc" },
-		{ RiscV_Zbs, "Zbs" },
+		{ RiscV_Zvbb, "Vector Basic Bitmanip" },
+		{ RiscV_Zvkb, "Vector Crypto Bitmanip" },
+		{ RiscV_Zba, "Bitmanip Zba" },
+		{ RiscV_Zbb, "Bitmanip Zbb" },
+		{ RiscV_Zbc, "Bitmanip Zbc" },
+		{ RiscV_Zbs, "Bitmanip Zbs" },
+		{ RiscV_Zcb, "Compress Zcb" },
+		{ RiscV_Zfa, "Float Additional" },
+		{ RiscV_Zfh, "Float Half" },
+		{ RiscV_Zfhmin, "Float Half Minimal" },
+		{ RiscV_Zicond, "Integer Conditional" },
 		{ RiscV_Zicsr, "Zicsr" },
 		{ CPU64bit, "64-bit" },
 	};

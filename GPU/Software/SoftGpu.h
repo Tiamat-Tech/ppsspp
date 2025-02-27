@@ -30,27 +30,27 @@ struct FormatBuffer {
 		u32 *as32;
 	};
 
-	inline void Set16(int x, int y, int stride, u16 v) {
+	inline void Set16(int x, int y, int stride, u16 v) const {
 		as16[x + y * stride] = v;
 	}
 
-	inline void Set32(int x, int y, int stride, u32 v) {
+	inline void Set32(int x, int y, int stride, u32 v) const {
 		as32[x + y * stride] = v;
 	}
 
-	inline u16 Get16(int x, int y, int stride) {
+	inline u16 Get16(int x, int y, int stride) const {
 		return as16[x + y * stride];
 	}
 
-	inline u32 Get32(int x, int y, int stride) {
+	inline u32 Get32(int x, int y, int stride) const {
 		return as32[x + y * stride];
 	}
 
-	inline u16 *Get16Ptr(int x, int y, int stride) {
+	inline u16 *Get16Ptr(int x, int y, int stride) const {
 		return &as16[x + y * stride];
 	}
 
-	inline u32 *Get32Ptr(int x, int y, int stride) {
+	inline u32 *Get32Ptr(int x, int y, int stride) const {
 		return &as32[x + y * stride];
 	}
 };
@@ -129,15 +129,16 @@ public:
 
 	u32 CheckGPUFeatures() const override { return 0; }
 	bool IsStarted() override;
-	void InitClear() override {}
 	void ExecuteOp(u32 op, u32 diff) override;
 	void FinishDeferred() override;
 	int ListSync(int listid, int mode) override;
 	u32 DrawSync(int mode) override;
+	void UpdateCmdInfo() override {}
 
 	void SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) override;
 	void CopyDisplayToOutput(bool reallyDirty) override;
 	void GetStats(char *buffer, size_t bufsize) override;
+	std::vector<const VirtualFramebuffer *> GetFramebufferList() const override { return std::vector<const VirtualFramebuffer *>(); }
 	void InvalidateCache(u32 addr, int size, GPUInvalidationType type) override;
 	void PerformWriteFormattedFromMemory(u32 addr, int size, int width, GEBufferFormat format) override;
 	bool PerformMemoryCopy(u32 dest, u32 src, int size, GPUCopyFlag flags = GPUCopyFlag::NONE) override;
@@ -145,14 +146,15 @@ public:
 	bool PerformReadbackToMemory(u32 dest, int size) override;
 	bool PerformWriteColorFromMemory(u32 dest, int size) override;
 	bool PerformWriteStencilFromMemory(u32 dest, int size, WriteStencil flags) override;
-	void ClearCacheNextFrame() override {}
 
 	void DeviceLost() override;
-	void DeviceRestore() override;
+	void DeviceRestore(Draw::DrawContext *draw) override;
 
 	void NotifyRenderResized() override;
 	void NotifyDisplayResized() override;
-	void NotifyConfigChanged() override;
+
+	void CheckDisplayResized() override;
+	void CheckConfigChanged() override;
 
 	void GetReportingInfo(std::string &primaryInfo, std::string &fullInfo) override {
 		primaryInfo = "Software";
@@ -168,7 +170,7 @@ public:
 	bool GetCurrentStencilbuffer(GPUDebugBuffer &buffer) override;
 	bool GetCurrentTexture(GPUDebugBuffer &buffer, int level, bool *isFramebuffer) override;
 	bool GetCurrentClut(GPUDebugBuffer &buffer) override;
-	bool GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
+	bool GetCurrentDrawAsDebugVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) override;
 
 	bool DescribeCodePtr(const u8 *ptr, std::string &name) override;
 
@@ -184,6 +186,9 @@ public:
 
 	// Overridden to change flushing behavior.
 	void Execute_Call(u32 op, u32 diff);
+
+	// Overridden for a dirty flag change.
+	void Execute_BoundingBox(u32 op, u32 diff);
 
 	void Execute_WorldMtxNum(u32 op, u32 diff);
 	void Execute_ViewMtxNum(u32 op, u32 diff);
@@ -203,6 +208,9 @@ public:
 	void Execute_ImmVertexAlphaPrim(u32 op, u32 diff);
 
 	typedef void (SoftGPU::*CmdFunc)(u32 op, u32 diff);
+
+	void BeginHostFrame() override;
+	bool PresentedThisFrame() const override;
 
 protected:
 	void FastRunLoop(DisplayList &list) override;

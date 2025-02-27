@@ -37,15 +37,10 @@
 #include "Common/CommonTypes.h"
 #include "Common/Log.h"
 #include "Common/File/Path.h"
+#include "Common/Data/Collections/LinkedList.h"
 
 namespace File {
 class IOFile;
-};
-
-template <class T>
-struct LinkedListItem : public T
-{
-	LinkedListItem<T> *next;
 };
 
 class PointerWrap;
@@ -121,6 +116,10 @@ public:
 		}
 	}
 
+	bool Failed() const {
+		return error == ERROR_FAILURE;
+	}
+
 	void RewindForWrite(u8 *writePtr);
 	bool CheckAfterWrite();
 
@@ -147,10 +146,16 @@ public:
 
 	void DoMarker(const char *prevName, u32 arbitraryNumber = 0x42);
 
+	void SkipBytes(size_t bytes) {
+		// Should work in all modes.
+		*ptr += bytes;
+	}
+
 	size_t Offset() const { return *ptr - ptrStart_; }
 
 private:
 	const char *firstBadSectionTitle_ = nullptr;
+	const char *curTitle_;
 	u8 *ptrStart_;
 	std::vector<SerializeCheckpoint> checkpoints_;
 	size_t curCheckpoint_ = 0;
@@ -264,9 +269,9 @@ public:
 			failureReason->clear();
 			error = LoadPtr(ptr, _class, failureReason);
 			delete [] ptr;
-			INFO_LOG(SAVESTATE, "ChunkReader: Done loading '%s'", filename.c_str());
+			INFO_LOG(Log::SaveState, "ChunkReader: Done loading '%s'", filename.c_str());
 		} else {
-			WARN_LOG(SAVESTATE, "ChunkReader: Error found during load of '%s'", filename.c_str());
+			WARN_LOG(Log::SaveState, "ChunkReader: Error found during load of '%s'", filename.c_str());
 		}
 		return error;
 	}

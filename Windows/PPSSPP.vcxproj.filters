@@ -62,6 +62,9 @@
     <Filter Include="Windows\Darkmode">
       <UniqueIdentifier>{e6f1a7f6-807b-484e-9595-bdb58ecaa2ae}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Other Platforms\Mac">
+      <UniqueIdentifier>{e2dd8951-ccb6-4575-996a-69c6832fafbf}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Debugger\CtrlDisAsmView.cpp">
@@ -184,9 +187,6 @@
     <ClCompile Include="GPU\D3D11Context.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
-    <ClCompile Include="..\Qt\QtHost.cpp">
-      <Filter>Other Platforms\Qt</Filter>
-    </ClCompile>
     <ClCompile Include="WindowsAudio.cpp">
       <Filter>Windows\System</Filter>
     </ClCompile>
@@ -244,9 +244,6 @@
     <ClCompile Include="..\SDL\SDLVulkanGraphicsContext.cpp">
       <Filter>Other Platforms\SDL</Filter>
     </ClCompile>
-    <ClCompile Include="..\UWP\UWPHost.cpp">
-      <Filter>Other Platforms\UWP</Filter>
-    </ClCompile>
     <ClCompile Include="..\UWP\NKCodeFromWindowsSystem.cpp">
       <Filter>Other Platforms\UWP</Filter>
     </ClCompile>
@@ -279,6 +276,12 @@
     </ClCompile>
     <ClCompile Include="W32Util\UAHMenuBar.cpp">
       <Filter>Windows\W32Util</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\WatchItemWindow.cpp">
+      <Filter>Windows\Debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="Debugger\EditSymbolsWindow.cpp">
+      <Filter>Windows\Debugger</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -402,9 +405,6 @@
     <ClInclude Include="GPU\D3D11Context.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
-    <ClInclude Include="..\Qt\QtHost.h">
-      <Filter>Other Platforms\Qt</Filter>
-    </ClInclude>
     <ClInclude Include="WindowsAudio.h">
       <Filter>Windows\System</Filter>
     </ClInclude>
@@ -508,9 +508,6 @@
     <ClInclude Include="..\SDL\SDLVulkanGraphicsContext.h">
       <Filter>Other Platforms\SDL</Filter>
     </ClInclude>
-    <ClInclude Include="..\UWP\UWPHost.h">
-      <Filter>Other Platforms\UWP</Filter>
-    </ClInclude>
     <ClInclude Include="..\UWP\NKCodeFromWindowsSystem.h">
       <Filter>Other Platforms\UWP</Filter>
     </ClInclude>
@@ -553,9 +550,6 @@
     <ClInclude Include="..\libretro\retro_inline.h">
       <Filter>Other Platforms\libretro</Filter>
     </ClInclude>
-    <ClInclude Include="mingw_defines.h">
-      <Filter>Other Platforms</Filter>
-    </ClInclude>
     <ClInclude Include="..\ios\iCade\iCadeState.h">
       <Filter>Other Platforms\iOS\iCade</Filter>
     </ClInclude>
@@ -570,6 +564,21 @@
     </ClInclude>
     <ClInclude Include="W32Util\UAHMenuBar.h">
       <Filter>Windows\W32Util</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\WatchItemWindow.h">
+      <Filter>Windows\Debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="Debugger\EditSymbolsWindow.h">
+      <Filter>Windows\Debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="..\SDL\CocoaBarItems.h">
+      <Filter>Other Platforms\Mac</Filter>
+    </ClInclude>
+    <ClInclude Include="..\UI\PSPNSApplicationDelegate.h">
+      <Filter>Other Platforms\Mac</Filter>
+    </ClInclude>
+    <ClInclude Include="..\UI\DarwinFileSystemServices.h">
+      <Filter>Other Platforms\iOS</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -799,6 +808,15 @@
     </None>
     <None Include="..\cmake\Toolchains\nvidiajetsonsdl.armv8.cmake">
       <Filter>Build\CMake</Filter>
+    </None>
+    <None Include="..\SDL\CocoaBarItems.mm">
+      <Filter>Other Platforms\Mac</Filter>
+    </None>
+    <None Include="..\UI\PSPNSApplicationDelegate.mm">
+      <Filter>Other Platforms\Mac</Filter>
+    </None>
+    <None Include="..\UI\DarwinFileSystemServices.mm">
+      <Filter>Other Platforms\iOS</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>

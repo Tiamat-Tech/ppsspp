@@ -19,21 +19,21 @@
 #include <d3d11_1.h>
 
 #include <algorithm>
+#include <wrl/client.h>
 
 #include "Common/Data/Convert/SmallDataConvert.h"
 
-#include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
 #include "GPU/Common/GPUStateUtils.h"
-#include "Core/System.h"
-#include "Core/Config.h"
 
 #include "GPU/Common/FramebufferManagerCommon.h"
 #include "GPU/D3D11/DrawEngineD3D11.h"
 #include "GPU/D3D11/StateMappingD3D11.h"
 #include "GPU/D3D11/FramebufferManagerD3D11.h"
 #include "GPU/D3D11/TextureCacheD3D11.h"
+
+using namespace Microsoft::WRL;
 
 // These tables all fit into u8s.
 static const D3D11_BLEND d3d11BlendFactorLookup[(size_t)BlendFactor::COUNT] = {
@@ -158,7 +158,7 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 				ApplyStencilReplaceAndLogicOpIgnoreBlend(blendState.replaceAlphaWithStencil, blendState);
 
 				if (fboTexBindState == FBO_TEX_COPY_BIND_TEX) {
-					framebufferManager_->BindFramebufferAsColorTexture(1, framebufferManager_->GetCurrentRenderVFB(), BINDFBCOLOR_MAY_COPY, 0);
+					framebufferManager_->BindFramebufferAsColorTexture(1, framebufferManager_->GetCurrentRenderVFB(), BINDFBCOLOR_MAY_COPY | BINDFBCOLOR_UNCACHED, 0);
 					// No sampler required, we do a plain Load in the pixel shader.
 					fboTexBound_ = true;
 					fboTexBindState = FBO_TEX_NONE;
@@ -356,8 +356,8 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 	// There might have been interactions between depth and blend above.
 	if (gstate_c.IsDirty(DIRTY_BLEND_STATE)) {
 		if (!device1_) {
-			ID3D11BlendState *bs = blendCache_.Get(keys_.blend.value);
-			if (bs == nullptr) {
+			ComPtr<ID3D11BlendState> bs;
+			if (!blendCache_.Get(keys_.blend.value, &bs) || !bs) {
 				D3D11_BLEND_DESC desc{};
 				D3D11_RENDER_TARGET_BLEND_DESC &rt = desc.RenderTarget[0];
 				rt.BlendEnable = keys_.blend.blendEnable;
@@ -373,8 +373,8 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 			}
 			blendState_ = bs;
 		} else {
-			ID3D11BlendState1 *bs1 = blendCache1_.Get(keys_.blend.value);
-			if (bs1 == nullptr) {
+			ComPtr<ID3D11BlendState1> bs1;
+			if (!blendCache1_.Get(keys_.blend.value, &bs1) || !bs1) {
 				D3D11_BLEND_DESC1 desc1{};
 				D3D11_RENDER_TARGET_BLEND_DESC1 &rt = desc1.RenderTarget[0];
 				rt.BlendEnable = keys_.blend.blendEnable;
@@ -395,8 +395,8 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 	}
 
 	if (gstate_c.IsDirty(DIRTY_RASTER_STATE)) {
-		ID3D11RasterizerState *rs = rasterCache_.Get(keys_.raster.value);
-		if (rs == nullptr) {
+		ComPtr<ID3D11RasterizerState> rs;
+		if (!rasterCache_.Get(keys_.raster.value, &rs) || !rs) {
 			D3D11_RASTERIZER_DESC desc{};
 			desc.CullMode = (D3D11_CULL_MODE)(keys_.raster.cullMode);
 			desc.FillMode = D3D11_FILL_SOLID;
@@ -410,8 +410,8 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 	}
 
 	if (gstate_c.IsDirty(DIRTY_DEPTHSTENCIL_STATE)) {
-		ID3D11DepthStencilState *ds = depthStencilCache_.Get(keys_.depthStencil.value);
-		if (ds == nullptr) {
+		ComPtr<ID3D11DepthStencilState> ds;
+		if (!depthStencilCache_.Get(keys_.depthStencil.value, &ds) || !ds) {
 			D3D11_DEPTH_STENCIL_DESC desc{};
 			desc.DepthEnable = keys_.depthStencil.depthTestEnable;
 			desc.DepthWriteMask = keys_.depthStencil.depthWriteEnable ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
@@ -442,24 +442,24 @@ void DrawEngineD3D11::ApplyDrawState(int prim) {
 void DrawEngineD3D11::ApplyDrawStateLate(bool applyStencilRef, uint8_t stencilRef) {
 	// we go through Draw here because it automatically handles screen rotation, as needed in UWP on mobiles.
 	if (gstate_c.IsDirty(DIRTY_VIEWPORTSCISSOR_STATE)) {
-		draw_->SetViewports(1, &dynState_.viewport);
+		draw_->SetViewport(dynState_.viewport);
 		draw_->SetScissorRect(dynState_.scissor.left, dynState_.scissor.top, dynState_.scissor.right - dynState_.scissor.left, dynState_.scissor.bottom - dynState_.scissor.top);
 	}
 	if (gstate_c.IsDirty(DIRTY_RASTER_STATE)) {
-		context_->RSSetState(rasterState_);
+		context_->RSSetState(rasterState_.Get());
 	}
 	if (gstate_c.IsDirty(DIRTY_BLEND_STATE)) {
 		// Need to do this AFTER ApplyTexture because the process of depalettization can ruin the blend state.
 		float blendColor[4];
 		Uint8x4ToFloat4(blendColor, dynState_.blendColor);
 		if (device1_) {
-			context1_->OMSetBlendState(blendState1_, blendColor, 0xFFFFFFFF);
+			context1_->OMSetBlendState(blendState1_.Get(), blendColor, 0xFFFFFFFF);
 		} else {
-			context_->OMSetBlendState(blendState_, blendColor, 0xFFFFFFFF);
+			context_->OMSetBlendState(blendState_.Get(), blendColor, 0xFFFFFFFF);
 		}
 	}
 	if (gstate_c.IsDirty(DIRTY_DEPTHSTENCIL_STATE) || applyStencilRef) {
-		context_->OMSetDepthStencilState(depthStencilState_, applyStencilRef ? stencilRef : dynState_.stencilRef);
+		context_->OMSetDepthStencilState(depthStencilState_.Get(), applyStencilRef ? stencilRef : dynState_.stencilRef);
 	}
 	gstate_c.Clean(DIRTY_VIEWPORTSCISSOR_STATE | DIRTY_DEPTHSTENCIL_STATE | DIRTY_RASTER_STATE | DIRTY_BLEND_STATE);
 	gstate_c.Dirty(dirtyRequiresRecheck_);

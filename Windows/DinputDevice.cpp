@@ -16,30 +16,30 @@
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
 #include "stdafx.h"
+#include <initguid.h>
+#include <cstddef>
 #include <limits.h>
 #include <algorithm>
 #include <mmsystem.h>
 #include <XInput.h>
+#include <wrl/client.h>
 
 #include "Common/Input/InputState.h"
 #include "Common/Input/KeyCodes.h"
-#include "Common/LogReporting.h"
 #include "Common/StringUtils.h"
 #include "Common/System/NativeApp.h"
-#include "Core/Config.h"
-#include "Core/HLE/sceCtrl.h"
 #include "Core/KeyMap.h"
 #include "Windows/DinputDevice.h"
 #pragma comment(lib,"dinput8.lib")
 
 //initialize static members of DinputDevice
 unsigned int                  DinputDevice::pInstances = 0;
-LPDIRECTINPUT8                DinputDevice::pDI = NULL;
+Microsoft::WRL::ComPtr<IDirectInput8> DinputDevice::pDI;
 std::vector<DIDEVICEINSTANCE> DinputDevice::devices;
 bool DinputDevice::needsCheck_ = true;
 
 // In order from 0.  There can be 128, but most controllers do not have that many.
-static const int dinput_buttons[] = {
+static const InputKeyCode dinput_buttons[] = {
 	NKCODE_BUTTON_1,
 	NKCODE_BUTTON_2,
 	NKCODE_BUTTON_3,
@@ -84,14 +84,14 @@ bool IsXInputDevice( const GUID* pGuidProductFromDirectInput ) {
 
 LPDIRECTINPUT8 DinputDevice::getPDI()
 {
-	if (pDI == NULL)
+	if (pDI == nullptr)
 	{
 		if (FAILED(DirectInput8Create(GetModuleHandle(NULL), DIRECTINPUT_VERSION, IID_IDirectInput8, (void**)&pDI, NULL)))
 		{
-			pDI = NULL;
+			pDI = nullptr;
 		}
 	}
-	return pDI;
+	return pDI.Get();
 }
 
 BOOL CALLBACK DinputDevice::DevicesCallback(
@@ -125,7 +125,7 @@ void DinputDevice::getDevices(bool refresh)
 DinputDevice::DinputDevice(int devnum) {
 	pInstances++;
 	pDevNum = devnum;
-	pJoystick = NULL;
+	pJoystick = nullptr;
 	memset(lastButtons_, 0, sizeof(lastButtons_));
 	memset(lastPOV_, 0, sizeof(lastPOV_));
 	last_lX_ = 0;
@@ -145,7 +145,7 @@ DinputDevice::DinputDevice(int devnum) {
 		return;
 	}
 
-	getDevices(false);
+	getDevices(needsCheck_);
 	if ( (devnum >= (int)devices.size()) || FAILED(getPDI()->CreateDevice(devices.at(devnum).guidInstance, &pJoystick, NULL)))
 	{
 		return;
@@ -157,8 +157,7 @@ DinputDevice::DinputDevice(int devnum) {
 	}
 
 	if (FAILED(pJoystick->SetDataFormat(&c_dfDIJoystick2))) {
-		pJoystick->Release();
-		pJoystick = NULL;
+		pJoystick = nullptr;
 		return;
 	}
 
@@ -187,8 +186,7 @@ DinputDevice::DinputDevice(int devnum) {
 
 DinputDevice::~DinputDevice() {
 	if (pJoystick) {
-		pJoystick->Release();
-		pJoystick = NULL;
+		pJoystick = nullptr;
 	}
 
 	pInstances--;
@@ -198,18 +196,18 @@ DinputDevice::~DinputDevice() {
 	//happening at the same time and other values like pDI are
 	//unsafe as well anyway
 	if (pInstances == 0 && pDI) {
-		pDI->Release();
-		pDI = NULL;
+		pDI = nullptr;
 	}
 }
 
-void SendNativeAxis(int deviceId, int value, int &lastValue, int axisId) {
-	AxisInput axis;
-	axis.deviceId = deviceId;
-	axis.axisId = axisId;
-	axis.value = (float)value / 10000.0f; // Convert axis to normalised float
-	NativeAxis(axis);
-
+void SendNativeAxis(InputDeviceID deviceId, int value, int &lastValue, InputAxis axisId) {
+	if (value != lastValue) {
+		AxisInput axis;
+		axis.deviceId = deviceId;
+		axis.axisId = axisId;
+		axis.value = (float)value * (1.0f / 10000.0f); // Convert axis to normalised float
+		NativeAxis(&axis, 1);
+	}
 	lastValue = value;
 }
 
@@ -241,10 +239,9 @@ int DinputDevice::UpdateState() {
 	ApplyButtons(js);
 
 	if (analog)	{
+		// TODO: Use the batched interface.
 		AxisInput axis;
 		axis.deviceId = DEVICE_ID_PAD_0 + pDevNum;
-
-		auto axesToSquare = KeyMap::MappedAxesForDevice(axis.deviceId);
 
 		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lX, last_lX_, JOYSTICK_AXIS_X);
 		SendNativeAxis(DEVICE_ID_PAD_0 + pDevNum, js.lY, last_lY_, JOYSTICK_AXIS_Y);
@@ -287,7 +284,7 @@ void DinputDevice::ApplyButtons(DIJOYSTATE2 &state) {
 
 	// Now the POV hat, which can technically go in any degree but usually does not.
 	if (LOWORD(state.rgdwPOV[0]) != lastPOV_[0]) {
-		KeyInput dpad[4];
+		KeyInput dpad[4]{};
 		for (int i = 0; i < 4; ++i) {
 			dpad[i].deviceId = DEVICE_ID_PAD_0 + pDevNum;
 			dpad[i].flags = KEY_UP;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <cstring>
 #include <sstream>
 #include <cstdint>
 
@@ -53,7 +54,7 @@ private:
 	bool ParseVersionString(std::string str);
 };
 
-bool ParseMacAddress(std::string str, uint8_t macAddr[6]);
+bool ParseMacAddress(const std::string &str, uint8_t macAddr[6]);
 
 bool TryParse(const std::string &str, bool *const output);
 bool TryParse(const std::string &str, uint32_t *const output);
@@ -74,3 +75,45 @@ static bool TryParse(const std::string &str, N *const output) {
 void NiceSizeFormat(uint64_t size, char *out, size_t bufSize);
 
 std::string NiceSizeFormat(uint64_t size);
+
+// seconds, or minutes, or hours.
+// Uses I18N strings.
+std::string NiceTimeFormat(int seconds);
+
+// Not a parser, needs a better location.
+// Simplified version of ShaderWriter. Would like to have that inherit from this but can't figure out how
+// due to the return value chaining.
+class StringWriter {
+public:
+	explicit StringWriter(char *buffer) : p_(buffer) {
+		buffer[0] = '\0';
+	}
+	StringWriter(const StringWriter &) = delete;
+
+	// Assumes the input is zero-terminated.
+	// C: Copies a string literal (which always are zero-terminated, the count includes the zero) directly to the stream.
+	template<size_t T>
+	StringWriter &C(const char(&text)[T]) {
+		memcpy(p_, text, T);
+		p_ += T - 1;
+		return *this;
+	}
+	// W: Writes a string_view to the stream.
+	StringWriter &W(std::string_view text) {
+		memcpy(p_, text.data(), text.length());
+		p_ += text.length();
+		*p_ = '\0';
+		return *this;
+	}
+
+	// F: Formats into the buffer.
+	StringWriter &F(const char *format, ...);
+	StringWriter &endl() { return C("\n"); }
+
+	void Rewind(size_t offset) {
+		p_ -= offset;
+	}
+
+private:
+	char *p_;
+};

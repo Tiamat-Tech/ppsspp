@@ -1,5 +1,9 @@
 #include <algorithm>
+
+#include "Common/Log.h"
 #include "Common/System/Display.h"
+#include "Common/System/System.h"
+#include "Common/System/Request.h"
 #include "Common/Input/InputState.h"
 #include "Common/Input/KeyCodes.h"
 #include "Common/Math/curves.h"
@@ -9,8 +13,6 @@
 #include "Common/UI/Root.h"
 #include "Common/Data/Text/I18n.h"
 #include "Common/Render/DrawBuffer.h"
-
-#include "Common/Log.h"
 
 static const bool ClickDebug = false;
 
@@ -24,40 +26,114 @@ UIScreen::~UIScreen() {
 }
 
 bool UIScreen::UseVerticalLayout() const {
-	return dp_yres > dp_xres * 1.1f;
+	return g_display.dp_yres > g_display.dp_xres * 1.1f;
 }
 
 void UIScreen::DoRecreateViews() {
-	if (recreateViews_) {
-		std::lock_guard<std::recursive_mutex> guard(screenManager()->inputLock_);
+	if (!recreateViews_) {
+		return;
+	}
 
-		UI::PersistMap persisted;
-		bool persisting = root_ != nullptr;
-		if (persisting) {
-			root_->PersistData(UI::PERSIST_SAVE, "root", persisted);
-		}
+	std::lock_guard<std::recursive_mutex> guard(screenManager()->inputLock_);
 
-		delete root_;
-		root_ = nullptr;
-		CreateViews();
-		UI::View *defaultView = root_ ? root_->GetDefaultFocusView() : nullptr;
-		if (defaultView && defaultView->GetVisibility() == UI::V_VISIBLE) {
-			defaultView->SetFocus();
-		}
-		recreateViews_ = false;
+	UI::PersistMap persisted;
+	bool persisting = root_ != nullptr;
+	if (persisting) {
+		root_->PersistData(UI::PERSIST_SAVE, "root", persisted);
+	}
 
-		if (persisting && root_ != nullptr) {
-			root_->PersistData(UI::PERSIST_RESTORE, "root", persisted);
+	delete root_;
+	root_ = nullptr;
+	CreateViews();
+	UI::View *defaultView = root_ ? root_->GetDefaultFocusView() : nullptr;
+	if (defaultView && defaultView->GetVisibility() == UI::V_VISIBLE) {
+		defaultView->SetFocus();
+	}
+	recreateViews_ = false;
 
-			// Update layout and refocus so things scroll into view.
-			// This is for resizing down, when focused on something now offscreen.
-			UI::LayoutViewHierarchy(*screenManager()->getUIContext(), root_, ignoreInsets_);
-			UI::View *focused = UI::GetFocusedView();
-			if (focused) {
-				root_->SubviewFocused(focused);
-			}
+	if (persisting && root_ != nullptr) {
+		root_->PersistData(UI::PERSIST_RESTORE, "root", persisted);
+
+		// Update layout and refocus so things scroll into view.
+		// This is for resizing down, when focused on something now offscreen.
+		UI::LayoutViewHierarchy(*screenManager()->getUIContext(), root_, ignoreInsets_);
+		UI::View *focused = UI::GetFocusedView();
+		if (focused) {
+			root_->SubviewFocused(focused);
 		}
 	}
+}
+
+void UIScreen::touch(const TouchInput &touch) {
+	if (!ignoreInput_ && root_) {
+		UI::TouchEvent(touch, root_);
+	}
+}
+
+void UIScreen::axis(const AxisInput &axis) {
+	if (!ignoreInput_ && root_) {
+		UI::AxisEvent(axis, root_);
+	}
+}
+
+bool UIScreen::key(const KeyInput &key) {
+	if (!ignoreInput_ && root_) {
+		return UI::KeyEvent(key, root_);
+	} else {
+		return false;
+	}
+}
+
+bool UIScreen::UnsyncTouch(const TouchInput &touch) {
+	if (ClickDebug && root_ && (touch.flags & TOUCH_DOWN)) {
+		INFO_LOG(Log::System, "Touch down!");
+		std::vector<UI::View *> views;
+		root_->Query(touch.x, touch.y, views);
+		for (auto view : views) {
+			INFO_LOG(Log::System, "%s", view->DescribeLog().c_str());
+		}
+	}
+
+	QueuedEvent ev{};
+	ev.type = QueuedEventType::TOUCH;
+	ev.touch = touch;
+	std::lock_guard<std::mutex> guard(eventQueueLock_);
+	eventQueue_.push_back(ev);
+	return false;
+}
+
+void UIScreen::UnsyncAxis(const AxisInput *axes, size_t count) {
+	QueuedEvent ev{};
+	ev.type = QueuedEventType::AXIS;
+	std::lock_guard<std::mutex> guard(eventQueueLock_);
+	for (size_t i = 0; i < count; i++) {
+		ev.axis = axes[i];
+		eventQueue_.push_back(ev);
+	}
+}
+
+bool UIScreen::UnsyncKey(const KeyInput &key) {
+	bool retval = false;
+	if (root_) {
+		// TODO: Make key events async too. The return value is troublesome, though.
+		switch (UI::UnsyncKeyEvent(key, root_)) {
+		case UI::KeyEventResult::ACCEPT:
+			retval = true;
+			break;
+		case UI::KeyEventResult::PASS_THROUGH:
+			retval = false;
+			break;
+		case UI::KeyEventResult::IGNORE_KEY:
+			return false;
+		}
+	}
+
+	QueuedEvent ev{};
+	ev.type = QueuedEventType::KEY;
+	ev.key = key;
+	std::lock_guard<std::mutex> guard(eventQueueLock_);
+	eventQueue_.push_back(ev);
+	return retval;
 }
 
 void UIScreen::update() {
@@ -72,6 +148,41 @@ void UIScreen::update() {
 	if (root_) {
 		UpdateViewHierarchy(root_);
 	}
+
+	while (true) {
+		QueuedEvent ev{};
+		{
+			std::lock_guard<std::mutex> guard(eventQueueLock_);
+			if (!eventQueue_.empty()) {
+				ev = eventQueue_.front();
+				eventQueue_.pop_front();
+			} else {
+				break;
+			}
+		}
+		if (ignoreInput_) {
+			continue;
+		}
+		switch (ev.type) {
+		case QueuedEventType::KEY:
+			key(ev.key);
+			break;
+		case QueuedEventType::TOUCH:
+			if (ClickDebug && (ev.touch.flags & TOUCH_DOWN)) {
+				INFO_LOG(Log::System, "Touch down!");
+				std::vector<UI::View *> views;
+				root_->Query(ev.touch.x, ev.touch.y, views);
+				for (auto view : views) {
+					INFO_LOG(Log::System, "%s", view->DescribeLog().c_str());
+				}
+			}
+			touch(ev.touch);
+			break;
+		case QueuedEventType::AXIS:
+			axis(ev.axis);
+			break;
+		}
+	}
 }
 
 void UIScreen::deviceLost() {
@@ -79,18 +190,15 @@ void UIScreen::deviceLost() {
 		root_->DeviceLost();
 }
 
-void UIScreen::deviceRestored() {
+void UIScreen::deviceRestored(Draw::DrawContext *draw) {
 	if (root_)
-		root_->DeviceRestored(screenManager()->getDrawContext());
+		root_->DeviceRestored(draw);
 }
 
-void UIScreen::preRender() {
+void UIScreen::SetupViewport() {
 	using namespace Draw;
 	Draw::DrawContext *draw = screenManager()->getDrawContext();
-	if (!draw) {
-		return;
-	}
-	draw->BeginFrame();
+	_dbg_assert_(draw != nullptr);
 	// Bind and clear the back buffer
 	draw->BindFramebufferAsRenderTarget(nullptr, { RPAction::CLEAR, RPAction::CLEAR, RPAction::CLEAR, 0xFF000000 }, "UI");
 	screenManager()->getUIContext()->BeginFrame();
@@ -98,41 +206,40 @@ void UIScreen::preRender() {
 	Draw::Viewport viewport;
 	viewport.TopLeftX = 0;
 	viewport.TopLeftY = 0;
-	viewport.Width = pixel_xres;
-	viewport.Height = pixel_yres;
+	viewport.Width = g_display.pixel_xres;
+	viewport.Height = g_display.pixel_yres;
 	viewport.MaxDepth = 1.0;
 	viewport.MinDepth = 0.0;
-	draw->SetViewports(1, &viewport);
-	draw->SetTargetSize(pixel_xres, pixel_yres);
+	draw->SetViewport(viewport);
+	draw->SetTargetSize(g_display.pixel_xres, g_display.pixel_yres);
 }
 
-void UIScreen::postRender() {
-	Draw::DrawContext *draw = screenManager()->getDrawContext();
-	if (!draw) {
-		return;
+ScreenRenderFlags UIScreen::render(ScreenRenderMode mode) {
+	if (mode & ScreenRenderMode::FIRST) {
+		SetupViewport();
 	}
-	draw->EndFrame();
-}
 
-void UIScreen::render() {
 	DoRecreateViews();
 
+	UIContext &uiContext = *screenManager()->getUIContext();
 	if (root_) {
-		UIContext *uiContext = screenManager()->getUIContext();
-
-		uiContext->SetScreenTag(tag());
-
-		UI::LayoutViewHierarchy(*uiContext, root_, ignoreInsets_);
-
-		uiContext->PushTransform({translation_, scale_, alpha_});
-
-		uiContext->Begin();
-		DrawBackground(*uiContext);
-		root_->Draw(*uiContext);
-		uiContext->Flush();
-
-		uiContext->PopTransform();
+		UI::LayoutViewHierarchy(uiContext, root_, ignoreInsets_);
 	}
+
+	uiContext.PushTransform({translation_, scale_, alpha_});
+
+	uiContext.Begin();
+	DrawBackground(uiContext);
+	if (root_) {
+		root_->Draw(uiContext);
+	}
+	uiContext.Flush();
+	DrawForeground(uiContext);
+	uiContext.Flush();
+
+	uiContext.PopTransform();
+
+	return ScreenRenderFlags::NONE;
 }
 
 TouchInput UIScreen::transformTouch(const TouchInput &touch) {
@@ -141,35 +248,15 @@ TouchInput UIScreen::transformTouch(const TouchInput &touch) {
 	float x = touch.x - translation_.x;
 	float y = touch.y - translation_.y;
 	// Scale around the center as the origin.
-	updated.x = (x - dp_xres * 0.5f) / scale_.x + dp_xres * 0.5f;
-	updated.y = (y - dp_yres * 0.5f) / scale_.y + dp_yres * 0.5f;
+	updated.x = (x - g_display.dp_xres * 0.5f) / scale_.x + g_display.dp_xres * 0.5f;
+	updated.y = (y - g_display.dp_yres * 0.5f) / scale_.y + g_display.dp_yres * 0.5f;
 
 	return updated;
 }
 
-void UIScreen::touch(const TouchInput &touch) {
-	if (root_) {
-		if (ClickDebug && (touch.flags & TOUCH_DOWN)) {
-			INFO_LOG(SYSTEM, "Touch down!");
-			std::vector<UI::View *> views;
-			root_->Query(touch.x, touch.y, views);
-			for (auto view : views) {
-				INFO_LOG(SYSTEM, "%s", view->DescribeLog().c_str());
-			}
-		}
-
-		UI::TouchEvent(touch, root_);
-	}
-}
-
-bool UIScreen::key(const KeyInput &key) {
-	if (root_) {
-		return UI::KeyEvent(key, root_);
-	}
-	return false;
-}
-
 void UIScreen::TriggerFinish(DialogResult result) {
+	// From here on, this dialog cannot receive input.
+	ignoreInput_ = true;
 	screenManager()->finishDialog(this, result);
 }
 
@@ -177,7 +264,7 @@ bool UIDialogScreen::key(const KeyInput &key) {
 	bool retval = UIScreen::key(key);
 	if (!retval && (key.flags & KEY_DOWN) && UI::IsEscapeKey(key)) {
 		if (finished_) {
-			ERROR_LOG(SYSTEM, "Screen already finished");
+			ERROR_LOG(Log::System, "Screen already finished");
 		} else {
 			finished_ = true;
 			TriggerFinish(DR_BACK);
@@ -188,16 +275,10 @@ bool UIDialogScreen::key(const KeyInput &key) {
 	return retval;
 }
 
-void UIDialogScreen::sendMessage(const char *msg, const char *value) {
+void UIDialogScreen::sendMessage(UIMessage message, const char *value) {
 	Screen *screen = screenManager()->dialogParent(this);
 	if (screen) {
-		screen->sendMessage(msg, value);
-	}
-}
-
-void UIScreen::axis(const AxisInput &axis) {
-	if (root_) {
-		UI::AxisEvent(axis, root_);
+		screen->sendMessage(message, value);
 	}
 }
 
@@ -216,24 +297,27 @@ UI::EventReturn UIScreen::OnCancel(UI::EventParams &e) {
 	return UI::EVENT_DONE;
 }
 
-PopupScreen::PopupScreen(std::string title, std::string button1, std::string button2)
+PopupScreen::PopupScreen(std::string_view title, std::string_view button1, std::string_view button2)
 	: title_(title) {
-	auto di = GetI18NCategory("Dialog");
+	auto di = GetI18NCategory(I18NCat::DIALOG);
 	if (!button1.empty())
-		button1_ = di->T(button1.c_str());
+		button1_ = di->T(button1);
 	if (!button2.empty())
-		button2_ = di->T(button2.c_str());
+		button2_ = di->T(button2);
 	alpha_ = 0.0f;  // inherited
 }
 
 void PopupScreen::touch(const TouchInput &touch) {
 	if (!box_ || (touch.flags & TOUCH_DOWN) == 0) {
+		// Handle down-presses here.
 		UIDialogScreen::touch(touch);
+		return;
 	}
 
 	// Extra bounds to avoid closing the dialog while trying to aim for something
-	// near the edge.
-	if (!box_->GetBounds().Expand(100.0f, 60.0f).Contains(touch.x, touch.y)) {
+	// near the edge. Now that we only close on actual down-events, we can shrink
+	// this border a bit.
+	if (!box_->GetBounds().Expand(30.0f, 30.0f).Contains(touch.x, touch.y)) {
 		TriggerFinish(DR_CANCEL);
 	}
 
@@ -280,14 +364,14 @@ void PopupScreen::update() {
 		scale_.y =  0.9f + animatePos * 0.1f;
 
 		if (hasPopupOrigin_) {
-			float xoff = popupOrigin_.x - dp_xres / 2;
-			float yoff = popupOrigin_.y - dp_yres / 2;
+			float xoff = popupOrigin_.x - g_display.dp_xres / 2;
+			float yoff = popupOrigin_.y - g_display.dp_yres / 2;
 
 			// Pull toward the origin a bit.
 			translation_.x = xoff * (1.0f - animatePos) * 0.2f;
 			translation_.y = yoff * (1.0f - animatePos) * 0.2f;
 		} else {
-			translation_.y = -dp_yres * (1.0f - animatePos) * 0.2f;
+			translation_.y = -g_display.dp_yres * (1.0f - animatePos) * 0.2f;
 		}
 	} else {
 		alpha_ = 1.0f;
@@ -303,17 +387,16 @@ void PopupScreen::SetPopupOrigin(const UI::View *view) {
 	popupOrigin_ = view->GetBounds().Center();
 }
 
-void PopupScreen::SetPopupOffset(float y) {
-	offsetY_ = y;
-}
-
 void PopupScreen::TriggerFinish(DialogResult result) {
 	if (CanComplete(result)) {
+		ignoreInput_ = true;
 		finishFrame_ = frames_;
 		finishResult_ = result;
 
 		OnCompleted(result);
 	}
+	// Inform UI that popup close to hide OSK (if visible)
+	System_NotifyUIEvent(UIEventNotification::POPUP_CLOSED);
 }
 
 void PopupScreen::CreateViews() {
@@ -326,24 +409,37 @@ void PopupScreen::CreateViews() {
 
 	float yres = screenManager()->getUIContext()->GetBounds().h;
 
-	box_ = new LinearLayout(ORIENT_VERTICAL,
-		new AnchorLayoutParams(PopupWidth(), FillVertical() ? yres - 30 : WRAP_CONTENT, dc.GetBounds().centerX(), dc.GetBounds().centerY() + offsetY_, NONE, NONE, true));
+	AnchorLayoutParams *anchorParams;
+	if (!alignTop_) {
+		// Standard centering etc.
+		anchorParams = new AnchorLayoutParams(PopupWidth(), FillVertical() ? yres - 30 : WRAP_CONTENT,
+			dc.GetBounds().centerX(), dc.GetBounds().centerY() + offsetY_, NONE, NONE, true);
+	} else {
+		// Top-aligned, for dialogs where we need to pop a keyboard below.
+		anchorParams = new AnchorLayoutParams(PopupWidth(), FillVertical() ? yres - 30 : WRAP_CONTENT,
+			NONE, 0, NONE, NONE, false);
+	}
+
+	box_ = new LinearLayout(ORIENT_VERTICAL, anchorParams);
 
 	root_->Add(box_);
 	box_->SetBG(dc.theme->popupStyle.background);
 	box_->SetHasDropShadow(hasDropShadow_);
 	// Since we scale a bit, make the dropshadow bleed past the edges.
-	box_->SetDropShadowExpand(std::max(dp_xres, dp_yres));
+	box_->SetDropShadowExpand(std::max(g_display.dp_xres, g_display.dp_yres));
 	box_->SetSpacing(0.0f);
 
-	View *title = new PopupHeader(title_);
 	if (HasTitleBar()) {
+		View *title = new PopupHeader(title_);
 		box_->Add(title);
 	}
 
 	CreatePopupContents(box_);
-	root_->SetDefaultFocusView(box_);
+	root_->Recurse([](View *view) {
+		view->SetPopupStyle(true);
+	});
 
+	root_->SetDefaultFocusView(box_);
 	if (ShowButtons() && !button1_.empty()) {
 		// And the two buttons at the bottom.
 		LinearLayout *buttonRow = new LinearLayout(ORIENT_HORIZONTAL, new LinearLayoutParams(200, WRAP_CONTENT));
@@ -351,17 +447,17 @@ void PopupScreen::CreateViews() {
 		Margins buttonMargins(5, 5);
 
 		// Adjust button order to the platform default.
-#if defined(_WIN32)
-		defaultButton_ = buttonRow->Add(new Button(button1_, new LinearLayoutParams(1.0f, buttonMargins)));
-		defaultButton_->OnClick.Handle<UIScreen>(this, &UIScreen::OnOK);
-		if (!button2_.empty())
-			buttonRow->Add(new Button(button2_, new LinearLayoutParams(1.0f, buttonMargins)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnCancel);
-#else
-		if (!button2_.empty())
-			buttonRow->Add(new Button(button2_, new LinearLayoutParams(1.0f)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnCancel);
-		defaultButton_ = buttonRow->Add(new Button(button1_, new LinearLayoutParams(1.0f)));
-		defaultButton_->OnClick.Handle<UIScreen>(this, &UIScreen::OnOK);
-#endif
+		if (System_GetPropertyBool(SYSPROP_OK_BUTTON_LEFT)) {
+			defaultButton_ = buttonRow->Add(new Button(button1_, new LinearLayoutParams(1.0f, buttonMargins)));
+			defaultButton_->OnClick.Handle<UIScreen>(this, &UIScreen::OnOK);
+			if (!button2_.empty())
+				buttonRow->Add(new Button(button2_, new LinearLayoutParams(1.0f, buttonMargins)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnCancel);
+		} else {
+			if (!button2_.empty())
+				buttonRow->Add(new Button(button2_, new LinearLayoutParams(1.0f)))->OnClick.Handle<UIScreen>(this, &UIScreen::OnCancel);
+			defaultButton_ = buttonRow->Add(new Button(button1_, new LinearLayoutParams(1.0f)));
+			defaultButton_->OnClick.Handle<UIScreen>(this, &UIScreen::OnOK);
+		}
 
 		box_->Add(buttonRow);
 	}

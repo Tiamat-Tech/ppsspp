@@ -20,9 +20,10 @@
 #include "Common/TimeUtil.h"
 #include "Common/GraphicsContext.h"
 #include "Core/Core.h"
+#include "Core/System.h"
 
 #include "GPU/GPU.h"
-#include "GPU/GPUInterface.h"
+#include "GPU/GPUCommon.h"
 
 #if PPSSPP_API(ANY_GL)
 #include "GPU/GLES/GPU_GLES.h"
@@ -39,7 +40,7 @@
 #endif
 
 GPUStatistics gpuStats;
-GPUInterface *gpu;
+GPUCommon *gpu;
 GPUDebugInterface *gpuDebug;
 
 template <typename T>
@@ -53,14 +54,12 @@ static void SetGPU(T *obj) {
 #endif
 
 bool GPU_IsReady() {
-	if (gpu)
-		return gpu->IsReady();
-	return false;
+	return gpu != nullptr;
 }
 
 bool GPU_IsStarted() {
 	if (gpu)
-		return gpu->IsReady() && gpu->IsStarted();
+		return gpu->IsStarted();
 	return false;
 }
 
@@ -104,15 +103,17 @@ bool GPU_Init(GraphicsContext *ctx, Draw::DrawContext *draw) {
 #if !PPSSPP_PLATFORM(SWITCH)
 	case GPUCORE_VULKAN:
 		if (!ctx) {
-			ERROR_LOG(G3D, "Unable to init Vulkan GPU backend, no context");
+			ERROR_LOG(Log::G3D, "Unable to init Vulkan GPU backend, no context");
 			break;
 		}
 		SetGPU(new GPU_Vulkan(ctx, draw));
 		break;
 #endif
+	default:
+		break;
 	}
 
-	if (gpu && gpu->IsReady() && !gpu->IsStarted())
+	if (gpu && !gpu->IsStarted())
 		SetGPU<SoftGPU>(nullptr);
 
 	return gpu != nullptr;
@@ -123,16 +124,7 @@ bool GPU_Init(GraphicsContext *ctx, Draw::DrawContext *draw) {
 #endif
 
 void GPU_Shutdown() {
-	// Reduce the risk for weird races with the Windows GE debugger.
-	gpuDebug = nullptr;
 
-	// Wait for IsReady, since it might be running on a thread.
-	if (gpu) {
-		gpu->CancelReady();
-		while (!gpu->IsReady()) {
-			sleep_ms(10);
-		}
-	}
 	delete gpu;
 	gpu = nullptr;
 }

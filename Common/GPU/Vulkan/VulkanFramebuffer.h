@@ -4,6 +4,7 @@
 #include "Common/GPU/Vulkan/VulkanContext.h"
 
 class VKRRenderPass;
+class VulkanBarrierBatch;
 
 // Pipelines need to be created for the right type of render pass.
 // TODO: Rename to RenderPassFlags?
@@ -13,15 +14,14 @@ enum class RenderPassType {
 	// These eight are organized so that bit 0 is DEPTH and bit 1 is INPUT and bit 2 is MULTIVIEW, so
 	// they can be OR-ed together in MergeRPTypes.
 	HAS_DEPTH = 1,
-	COLOR_INPUT = 2,  // input attachment
-	MULTIVIEW = 4,
-	MULTISAMPLE = 8,
+	MULTIVIEW = 2,
+	MULTISAMPLE = 4,
 
 	// This is the odd one out, and gets special handling in MergeRPTypes.
 	// If this flag is set, none of the other flags can be set.
 	// For the backbuffer we can always use CLEAR/DONT_CARE, so bandwidth cost for a depth channel is negligible
 	// so we don't bother with a non-depth version.
-	BACKBUFFER = 16,
+	BACKBUFFER = 8,
 
 	TYPE_COUNT = BACKBUFFER + 1,
 };
@@ -58,7 +58,7 @@ struct VKRImage {
 
 class VKRFramebuffer {
 public:
-	VKRFramebuffer(VulkanContext *vk, VkCommandBuffer initCmd, VKRRenderPass *compatibleRenderPass, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag);
+	VKRFramebuffer(VulkanContext *vk, VulkanBarrierBatch *barriers, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag);
 	~VKRFramebuffer();
 
 	VkFramebuffer Get(VKRRenderPass *compatibleRenderPass, RenderPassType rpType);
@@ -95,7 +95,7 @@ public:
 
 	VulkanContext *Vulkan() const { return vulkan_; }
 private:
-	static void CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag);
+	static void CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barriers, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag);
 
 	VkFramebuffer framebuf[(size_t)RenderPassType::TYPE_COUNT]{};
 
@@ -105,10 +105,6 @@ private:
 
 inline bool RenderPassTypeHasDepth(RenderPassType type) {
 	return (type & RenderPassType::HAS_DEPTH) || type == RenderPassType::BACKBUFFER;
-}
-
-inline bool RenderPassTypeHasInput(RenderPassType type) {
-	return (type & RenderPassType::COLOR_INPUT) != 0;
 }
 
 inline bool RenderPassTypeHasMultiView(RenderPassType type) {
@@ -145,7 +141,7 @@ struct RPKey {
 
 class VKRRenderPass {
 public:
-	VKRRenderPass(const RPKey &key) : key_(key) {}
+	explicit VKRRenderPass(const RPKey &key) : key_(key) {}
 
 	VkRenderPass Get(VulkanContext *vulkan, RenderPassType rpType, VkSampleCountFlagBits sampleCount);
 	void Destroy(VulkanContext *vulkan) {
@@ -159,6 +155,8 @@ public:
 private:
 	// TODO: Might be better off with a hashmap once the render pass type count grows really large..
 	VkRenderPass pass[(size_t)RenderPassType::TYPE_COUNT]{};
-	VkSampleCountFlagBits sampleCounts[(size_t)RenderPassType::TYPE_COUNT];
+	VkSampleCountFlagBits sampleCounts[(size_t)RenderPassType::TYPE_COUNT]{};
 	RPKey key_;
 };
+
+const char *GetRPTypeName(RenderPassType rpType);

@@ -68,7 +68,7 @@ void CalcCullRange(float minValues[4], float maxValues[4], bool flipViewport, bo
 	minValues[3] = clampEnable;
 	maxValues[0] = x.second;
 	maxValues[1] = y.second;
-	maxValues[2] = z.second;
+	maxValues[2] = z.second + 1.0f / 65536.0f; // Adjustment needed due to some kind of rounding. See #17061
 	maxValues[3] = NAN;
 }
 
@@ -135,12 +135,12 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 			ConvertProjMatrixToVulkan(flippedMatrix);
 		}
 
-		if (!useBufferedRendering && g_display_rotation != DisplayRotation::ROTATE_0) {
-			flippedMatrix = flippedMatrix * g_display_rot_matrix;
+		if (!useBufferedRendering && g_display.rotation != DisplayRotation::ROTATE_0) {
+			flippedMatrix = flippedMatrix * g_display.rot_matrix;
 		}
 		CopyMatrix4x4(ub->proj, flippedMatrix.getReadPtr());
 
-		ub->rotation = useBufferedRendering ? 0 : (float)g_display_rotation;
+		ub->rotation = useBufferedRendering ? 0 : (float)g_display.rotation;
 	}
 
 	if (dirtyUniforms & DIRTY_PROJTHROUGHMATRIX) {
@@ -150,8 +150,8 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 		} else {
 			proj_through.setOrthoVulkan(0.0f, gstate_c.curRTWidth, 0, gstate_c.curRTHeight, 0, 1);
 		}
-		if (!useBufferedRendering && g_display_rotation != DisplayRotation::ROTATE_0) {
-			proj_through = proj_through * g_display_rot_matrix;
+		if (!useBufferedRendering && g_display.rotation != DisplayRotation::ROTATE_0) {
+			proj_through = proj_through * g_display.rot_matrix;
 		}
 
 		// Negative RT offsets come from split framebuffers (Killzone)
@@ -174,28 +174,21 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 		ConvertMatrix4x3To3x4Transposed(ub->tex, gstate.tgenMatrix);
 	}
 
-	if (dirtyUniforms & DIRTY_FOGCOEFENABLE) {
-		if (gstate.isFogEnabled() && !gstate.isModeThrough()) {
-			float fogcoef[2] = {
-				getFloat24(gstate.fog1),
-				getFloat24(gstate.fog2),
-			};
-			// The PSP just ignores infnan here (ignoring IEEE), so take it down to a valid float.
-			// Workaround for https://github.com/hrydgard/ppsspp/issues/5384#issuecomment-38365988
-			if (my_isnanorinf(fogcoef[0])) {
-				// Not really sure what a sensible value might be, but let's try 64k.
-				fogcoef[0] = std::signbit(fogcoef[0]) ? -65535.0f : 65535.0f;
-			}
-			if (my_isnanorinf(fogcoef[1])) {
-				fogcoef[1] = std::signbit(fogcoef[1]) ? -65535.0f : 65535.0f;
-			}
-			CopyFloat2(ub->fogCoef, fogcoef);
-		} else {
-			// not very useful values, use as marker for disabled fog.
-			// could also burn one extra uniform.
-			ub->fogCoef[0] = -65536.0f;
-			ub->fogCoef[1] = -65536.0f;
+	if (dirtyUniforms & DIRTY_FOGCOEF) {
+		float fogcoef[2] = {
+			getFloat24(gstate.fog1),
+			getFloat24(gstate.fog2),
+		};
+		// The PSP just ignores infnan here (ignoring IEEE), so take it down to a valid float.
+		// Workaround for https://github.com/hrydgard/ppsspp/issues/5384#issuecomment-38365988
+		if (my_isnanorinf(fogcoef[0])) {
+			// Not really sure what a sensible value might be, but let's try 64k.
+			fogcoef[0] = std::signbit(fogcoef[0]) ? -65535.0f : 65535.0f;
 		}
+		if (my_isnanorinf(fogcoef[1])) {
+			fogcoef[1] = std::signbit(fogcoef[1]) ? -65535.0f : 65535.0f;
+		}
+		CopyFloat2(ub->fogCoef, fogcoef);
 	}
 
 	if (dirtyUniforms & DIRTY_TEX_ALPHA_MUL) {
@@ -222,12 +215,16 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 
 	// Texturing
 	if (dirtyUniforms & DIRTY_UVSCALEOFFSET) {
-		const float invW = 1.0f / (float)gstate_c.curTextureWidth;
-		const float invH = 1.0f / (float)gstate_c.curTextureHeight;
-		const int w = gstate.getTextureWidth(0);
-		const int h = gstate.getTextureHeight(0);
-		const float widthFactor = (float)w * invW;
-		const float heightFactor = (float)h * invH;
+		float widthFactor = 1.0f;
+		float heightFactor = 1.0f;
+		if (gstate_c.textureIsFramebuffer) {
+			const float invW = 1.0f / (float)gstate_c.curTextureWidth;
+			const float invH = 1.0f / (float)gstate_c.curTextureHeight;
+			const int w = gstate.getTextureWidth(0);
+			const int h = gstate.getTextureHeight(0);
+			widthFactor = (float)w * invW;
+			heightFactor = (float)h * invH;
+		}
 		if (gstate_c.submitType == SubmitType::HW_BEZIER || gstate_c.submitType == SubmitType::HW_SPLINE) {
 			// When we are generating UV coordinates through the bezier/spline, we need to apply the scaling.
 			// However, this is missing a check that we're not getting our UV:s supplied for us in the vertices.
@@ -251,7 +248,9 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 		float vpZCenter = gstate.getViewportZCenter();
 
 		// These are just the reverse of the formulas in GPUStateUtils.
-		float halfActualZRange = gstate_c.vpDepthScale != 0.0f ? vpZScale / gstate_c.vpDepthScale : 0.0f;
+		float halfActualZRange = InfToZero(gstate_c.vpDepthScale != 0.0f ? vpZScale / gstate_c.vpDepthScale : 0.0f);
+		float inverseDepthScale = InfToZero(gstate_c.vpDepthScale != 0.0f ? 1.0f / gstate_c.vpDepthScale : 0.0f);
+
 		float minz = -((gstate_c.vpZOffset * halfActualZRange) - vpZCenter) - halfActualZRange;
 		float viewZScale = halfActualZRange * 2.0f;
 		float viewZCenter = minz;
@@ -259,7 +258,7 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 		ub->depthRange[0] = viewZScale;
 		ub->depthRange[1] = viewZCenter;
 		ub->depthRange[2] = gstate_c.vpZOffset * 0.5f + 0.5f;
-		ub->depthRange[3] = 2.0f * (1.0f / gstate_c.vpDepthScale);
+		ub->depthRange[3] = 2.0f * inverseDepthScale;
 	}
 
 	if (dirtyUniforms & DIRTY_CULLRANGE) {
@@ -277,12 +276,14 @@ void BaseUpdateUniforms(UB_VS_FS_Base *ub, uint64_t dirtyUniforms, bool flipView
 		int format = gstate_c.depalFramebufferFormat;
 		uint32_t val = BytesToUint32(indexMask, indexShift, indexOffset, format);
 		// Poke in a bilinear filter flag in the top bit.
-		val |= gstate.isMagnifyFilteringEnabled() << 31;
+		if (gstate.isMagnifyFilteringEnabled())
+			val |= 0x80000000;
 		ub->depal_mask_shift_off_fmt = val;
 	}
 }
 
 // For "light ubershader" bits.
+// TODO: We pack these bits even when not using ubershader lighting. Maybe not bother.
 uint32_t PackLightControlBits() {
 	// Bit organization
 	// Bottom 4 bits are enable bits for each light.
@@ -304,8 +305,6 @@ uint32_t PackLightControlBits() {
 
 	// Material update is 3 bits.
 	lightControl |= gstate.getMaterialUpdate() << 20;
-	// LMODE is 1 bit.
-	lightControl |= gstate.isUsingSecondaryColor() << 23;
 	return lightControl;
 }
 

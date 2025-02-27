@@ -1,7 +1,10 @@
 #pragma once
 
-#include "Common/Input/InputState.h"
-#include "Common/Input/KeyCodes.h"
+#include <cstddef>
+
+struct AxisInput;
+struct TouchInput;
+struct KeyInput;
 
 enum VRCompatFlag {
 	//compatibility tweaks
@@ -27,14 +30,14 @@ enum VRAppMode {
 // VR app flow integration
 bool IsVREnabled();
 void InitVROnAndroid(void* vm, void* activity, const char* system, int version, const char* name);
-void EnterVR(bool firstStart, void* vulkanContext);
+void EnterVR(bool firstStart);
 void GetVRResolutionPerEye(int* width, int* height);
-void SetVRCallbacks(void(*axis)(const AxisInput &axis), bool(*key)(const KeyInput &key), void(*touch)(const TouchInput &touch));
+void SetVRCallbacks(void(*axis)(const AxisInput *axis, size_t count), bool(*key)(const KeyInput &key), void(*touch)(const TouchInput &touch));
 
 // VR input integration
 void SetVRAppMode(VRAppMode mode);
-void UpdateVRInput(bool haptics, float dp_xscale, float dp_yscale);
-bool UpdateVRAxis(const AxisInput &axis);
+void UpdateVRInput(bool haptics, float dp_scale);
+bool UpdateVRAxis(const AxisInput *axes, size_t count);
 bool UpdateVRKeys(const KeyInput &key);
 
 // VR games compatibility
@@ -49,11 +52,14 @@ void PreVRFrameRender(int fboIndex);
 void PostVRFrameRender();
 int GetVRFBOIndex();
 int GetVRPassesCount();
-bool IsMultiviewSupported();
+bool IsPassthroughSupported();
+bool IsBigScreenVRMode();
 bool IsFlatVRGame();
 bool IsFlatVRScene();
 bool IsGameVRScene();
+bool IsImmersiveVRMode();
 bool Is2DVRObject(float* projMatrix, bool ortho);
-void UpdateVRParams(float* projMatrix, float* viewMatrix);
-void UpdateVRProjection(float* projMatrix, float* leftEye, float* rightEye);
+void UpdateVRParams(float* projMatrix);
+void UpdateVRProjection(float* projMatrix, float* output);
 void UpdateVRView(float* leftEye, float* rightEye);
+void UpdateVRViewMatrices();

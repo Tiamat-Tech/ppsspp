@@ -2,6 +2,27 @@
 #include "Common/GPU/Vulkan/VulkanFramebuffer.h"
 #include "Common/GPU/Vulkan/VulkanQueueRunner.h"
 
+static const char * const rpTypeDebugNames[] = {
+	"RENDER",
+	"RENDER_DEPTH",
+	"MV_RENDER",
+	"MV_RENDER_DEPTH",
+	"MS_RENDER",
+	"MS_RENDER_DEPTH",
+	"MS_MV_RENDER",
+	"MS_MV_RENDER_DEPTH",
+	"BACKBUF",
+};
+
+const char *GetRPTypeName(RenderPassType rpType) {
+	uint32_t index = (uint32_t)rpType;
+	if (index < ARRAY_SIZE(rpTypeDebugNames)) {
+		return rpTypeDebugNames[index];
+	} else {
+		return "N/A";
+	}
+}
+
 VkSampleCountFlagBits MultiSampleLevelToFlagBits(int count) {
 	// TODO: Check hardware support here, or elsewhere?
 	// Some hardware only supports 4x.
@@ -35,23 +56,23 @@ void VKRImage::Delete(VulkanContext *vulkan) {
 	}
 }
 
-VKRFramebuffer::VKRFramebuffer(VulkanContext *vk, VkCommandBuffer initCmd, VKRRenderPass *compatibleRenderPass, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag)
-	: vulkan_(vk), tag_(tag), width(_width), height(_height), numLayers(_numLayers) {
+VKRFramebuffer::VKRFramebuffer(VulkanContext *vk, VulkanBarrierBatch *barriers, int _width, int _height, int _numLayers, int _multiSampleLevel, bool createDepthStencilBuffer, const char *tag)
+	: vulkan_(vk), width(_width), height(_height), numLayers(_numLayers) {
 
 	_dbg_assert_(tag);
 
-	CreateImage(vulkan_, initCmd, color, width, height, numLayers, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag);
+	CreateImage(vulkan_, barriers, color, width, height, numLayers, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag);
 	if (createDepthStencilBuffer) {
-		CreateImage(vulkan_, initCmd, depth, width, height, numLayers, VK_SAMPLE_COUNT_1_BIT, vulkan_->GetDeviceInfo().preferredDepthStencilFormat, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, tag);
+		CreateImage(vulkan_, barriers, depth, width, height, numLayers, VK_SAMPLE_COUNT_1_BIT, vulkan_->GetDeviceInfo().preferredDepthStencilFormat, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, tag);
 	}
 
 	if (_multiSampleLevel > 0) {
 		sampleCount = MultiSampleLevelToFlagBits(_multiSampleLevel);
 
 		// TODO: Create a different tag for these?
-		CreateImage(vulkan_, initCmd, msaaColor, width, height, numLayers, sampleCount, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag);
+		CreateImage(vulkan_, barriers, msaaColor, width, height, numLayers, sampleCount, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, true, tag);
 		if (createDepthStencilBuffer) {
-			CreateImage(vulkan_, initCmd, msaaDepth, width, height, numLayers, sampleCount, vulkan_->GetDeviceInfo().preferredDepthStencilFormat, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, tag);
+			CreateImage(vulkan_, barriers, msaaDepth, width, height, numLayers, sampleCount, vulkan_->GetDeviceInfo().preferredDepthStencilFormat, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, false, tag);
 		}
 	} else {
 		sampleCount = VK_SAMPLE_COUNT_1_BIT;
@@ -64,6 +85,7 @@ VKRFramebuffer::VKRFramebuffer(VulkanContext *vk, VkCommandBuffer initCmd, VKRRe
 }
 
 void VKRFramebuffer::UpdateTag(const char *newTag) {
+    tag_ = newTag;
 	char name[128];
 	snprintf(name, sizeof(name), "fb_color_%s", tag_.c_str());
 	vulkan_->SetDebugName(color.image, VK_OBJECT_TYPE_IMAGE, name);
@@ -96,7 +118,7 @@ VkFramebuffer VKRFramebuffer::Get(VKRRenderPass *compatibleRenderPass, RenderPas
 	views[attachmentCount++] = color.rtView;  // 2D array texture if multilayered.
 	if (hasDepth) {
 		if (!depth.rtView) {
-			WARN_LOG(G3D, "depth render type to non-depth fb: %p %p fmt=%d (%s %dx%d)", (void *)depth.image, (void *)depth.texAllLayersView, depth.format, tag_.c_str(), width, height);
+			WARN_LOG(Log::G3D, "depth render type to non-depth fb: %p %p fmt=%d (%s %dx%d)", (void *)depth.image, (void *)depth.texAllLayersView, depth.format, tag_.c_str(), width, height);
 			// Will probably crash, depending on driver.
 		}
 		views[attachmentCount++] = depth.rtView;
@@ -140,7 +162,7 @@ VKRFramebuffer::~VKRFramebuffer() {
 
 // NOTE: If numLayers > 1, it will create an array texture, rather than a normal 2D texture.
 // This requires a different sampling path!
-void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag) {
+void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VulkanBarrierBatch *barriers, VKRImage &img, int width, int height, int numLayers, VkSampleCountFlagBits sampleCount, VkFormat format, VkImageLayout initialLayout, bool color, const char *tag) {
 	// We don't support more exotic layer setups for now. Mono or stereo.
 	_dbg_assert_(numLayers == 1 || numLayers == 2);
 
@@ -161,9 +183,6 @@ void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKR
 	}
 	if (color) {
 		ici.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-		if (sampleCount == VK_SAMPLE_COUNT_1_BIT) {
-			ici.usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
-		}
 	} else {
 		ici.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 	}
@@ -174,6 +193,8 @@ void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKR
 
 	VkResult res = vmaCreateImage(vulkan->Allocator(), &ici, &allocCreateInfo, &img.image, &img.alloc, &allocInfo);
 	_dbg_assert_(res == VK_SUCCESS);
+
+	vulkan->SetDebugName(img.image, VK_OBJECT_TYPE_IMAGE, tag);
 
 	VkImageAspectFlags aspects = color ? VK_IMAGE_ASPECT_COLOR_BIT : (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
 
@@ -196,6 +217,7 @@ void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKR
 
 	ivci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;  // layered for consistency, even if single image.
 	res = vkCreateImageView(vulkan->GetDevice(), &ivci, nullptr, &img.texAllLayersView);
+	_dbg_assert_(res == VK_SUCCESS);
 	vulkan->SetDebugName(img.texAllLayersView, VK_OBJECT_TYPE_IMAGE_VIEW, tag);
 
 	// Create 2D views for both layers.
@@ -233,10 +255,14 @@ void VKRFramebuffer::CreateImage(VulkanContext *vulkan, VkCommandBuffer cmd, VKR
 		return;
 	}
 
-	TransitionImageLayout2(cmd, img.image, 0, 1, numLayers, aspects,
-		VK_IMAGE_LAYOUT_UNDEFINED, initialLayout,
-		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dstStage,
-		0, dstAccessMask);
+	VkImageMemoryBarrier *barrier = barriers->Add(img.image, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dstStage, 0);
+	barrier->subresourceRange.layerCount = numLayers;
+	barrier->subresourceRange.aspectMask = aspects;
+	barrier->oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier->newLayout = initialLayout;
+	barrier->srcAccessMask = 0;
+	barrier->dstAccessMask = dstAccessMask;
+
 	img.layout = initialLayout;
 	img.format = format;
 	img.sampleCount = sampleCount;
@@ -265,11 +291,16 @@ static VkAttachmentStoreOp ConvertStoreAction(VKRRenderPassStoreAction action) {
 // Also see https://www.khronos.org/registry/vulkan/specs/1.3-extensions/html/vkspec.html#synchronization-pipeline-barriers-subpass-self-dependencies
 
 VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPassType rpType, VkSampleCountFlagBits sampleCount) {
-	bool selfDependency = RenderPassTypeHasInput(rpType);
 	bool isBackbuffer = rpType == RenderPassType::BACKBUFFER;
 	bool hasDepth = RenderPassTypeHasDepth(rpType);
 	bool multiview = RenderPassTypeHasMultiView(rpType);
 	bool multisample = RenderPassTypeHasMultisample(rpType);
+
+	_dbg_assert_(!(isBackbuffer && multisample));
+
+	if (isBackbuffer) {
+		_dbg_assert_(key.depthLoadAction != VKRRenderPassLoadAction::KEEP);
+	}
 
 	if (multiview) {
 		// TODO: Assert that the device has multiview support enabled.
@@ -297,7 +328,7 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 		attachments[attachmentCount].storeOp = ConvertStoreAction(key.depthStoreAction);
 		attachments[attachmentCount].stencilLoadOp = multisample ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : ConvertLoadAction(key.stencilLoadAction);
 		attachments[attachmentCount].stencilStoreOp = ConvertStoreAction(key.stencilStoreAction);
-		attachments[attachmentCount].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		attachments[attachmentCount].initialLayout = isBackbuffer ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		attachments[attachmentCount].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		attachmentCount++;
 	}
@@ -330,7 +361,7 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 
 	VkAttachmentReference colorReference{};
 	colorReference.attachment = colorAttachmentIndex;
-	colorReference.layout = selfDependency ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	colorReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
 	VkAttachmentReference depthReference{};
 	depthReference.attachment = depthAttachmentIndex;
@@ -339,20 +370,13 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 	VkSubpassDescription subpass{};
 	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpass.flags = 0;
-	if (selfDependency) {
-		subpass.inputAttachmentCount = 1;
-		subpass.pInputAttachments = &colorReference;
-	} else {
-		subpass.inputAttachmentCount = 0;
-		subpass.pInputAttachments = nullptr;
-	}
 	subpass.colorAttachmentCount = 1;
 	subpass.pColorAttachments = &colorReference;
 
 	VkAttachmentReference colorResolveReference;
 	if (multisample) {
 		colorResolveReference.attachment = 0;  // the non-msaa color buffer.
-		colorResolveReference.layout = selfDependency ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		colorResolveReference.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		subpass.pResolveAttachments = &colorResolveReference;
 	} else {
 		subpass.pResolveAttachments = nullptr;
@@ -387,23 +411,25 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 	}
 
 	if (isBackbuffer) {
+		// We don't specify any explicit transitions for these, so let's use subpass dependencies.
+		// This makes sure that writes to the depth image are done before we try to write to it again.
+		// From Sascha's examples.
 		deps[numDeps].srcSubpass = VK_SUBPASS_EXTERNAL;
 		deps[numDeps].dstSubpass = 0;
-		deps[numDeps].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		deps[numDeps].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		deps[numDeps].srcAccessMask = 0;
-		deps[numDeps].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		numDeps++;
-	}
-
-	if (selfDependency) {
+		deps[numDeps].srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		deps[numDeps].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		deps[numDeps].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		deps[numDeps].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		deps[numDeps].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-		deps[numDeps].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		deps[numDeps].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
-		deps[numDeps].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-		deps[numDeps].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-		deps[numDeps].srcSubpass = 0;
+		numDeps++;
+		// Dependencies for the color image.
+		deps[numDeps].srcSubpass = VK_SUBPASS_EXTERNAL;
 		deps[numDeps].dstSubpass = 0;
+		deps[numDeps].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		deps[numDeps].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		deps[numDeps].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		deps[numDeps].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		deps[numDeps].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 		numDeps++;
 	}
 
@@ -463,20 +489,18 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 		VkSubpassDescription2KHR subpass2{ VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2_KHR };
 		subpass2.colorAttachmentCount = subpass.colorAttachmentCount;
 		subpass2.flags = subpass.flags;
-		if (selfDependency) {
-			subpass2.inputAttachmentCount = subpass.inputAttachmentCount;
-			subpass2.pInputAttachments = &colorReference2;
-		}
 		subpass2.pColorAttachments = &colorReference2;
 		if (hasDepth) {
 			subpass2.pDepthStencilAttachment = &depthReference2;
 		}
 		subpass2.pipelineBindPoint = subpass.pipelineBindPoint;
 		subpass2.viewMask = multiview ? viewMask : 0;
+
+		// We check for multisample again, we want this path to also support non-multisample.
 		if (multisample) {
 			colorResolveReference2.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			colorResolveReference2.attachment = colorResolveReference.attachment;  // the non-msaa color buffer.
-			colorResolveReference2.layout = selfDependency ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			colorResolveReference2.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			subpass2.pResolveAttachments = &colorResolveReference2;
 		} else {
 			subpass2.pResolveAttachments = nullptr;
@@ -484,8 +508,9 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 
 		VkAttachmentReference2KHR depthResolveReference2{ VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2_KHR };
 		VkSubpassDescriptionDepthStencilResolveKHR depthStencilResolve{ VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE_KHR };
+		// We check for multisample again, we want this path to also support non-multisample.
 		if (hasDepth && multisample) {
-			subpass2.pNext = &depthStencilResolve;
+			ChainStruct(subpass2, &depthStencilResolve);
 			depthResolveReference2.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 			depthResolveReference2.attachment = 1;
 			depthResolveReference2.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -504,9 +529,13 @@ VkRenderPass CreateRenderPass(VulkanContext *vulkan, const RPKey &key, RenderPas
 		rp2.pCorrelatedViewMasks = multiview ? &viewMask : nullptr;
 		rp2.pSubpasses = &subpass2;
 		rp2.subpassCount = 1;
-		res = vkCreateRenderPass2KHR(vulkan->GetDevice(), &rp2, nullptr, &pass);
+		res = vkCreateRenderPass2(vulkan->GetDevice(), &rp2, nullptr, &pass);
 	} else {
 		res = vkCreateRenderPass(vulkan->GetDevice(), &rp, nullptr, &pass);
+	}
+
+	if (pass) {
+		vulkan->SetDebugName(pass, VK_OBJECT_TYPE_RENDER_PASS, GetRPTypeName(rpType));
 	}
 
 	_assert_(res == VK_SUCCESS);

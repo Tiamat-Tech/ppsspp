@@ -39,7 +39,6 @@
 #include "zlib.h"
 
 #include "Common/CommonTypes.h"
-#include "Common/Data/Encoding/Utf8.h"
 #include "Common/Log.h"
 #include "Common/File/FileUtil.h"
 #include "Common/StringUtils.h"
@@ -165,7 +164,7 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 		type = (SymbolType) typeInt;
 		if (!hasModules) {
 			if (!Memory::IsValidAddress(vaddress)) {
-				ERROR_LOG(LOADER, "Invalid address in symbol file: %08x (%s)", vaddress, name);
+				ERROR_LOG(Log::Loader, "Invalid address in symbol file: %08x (%s)", vaddress, name);
 				continue;
 			}
 		} else {
@@ -173,13 +172,21 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 			moduleIndex = vaddress;
 			vaddress = GetModuleAbsoluteAddr(address, moduleIndex);
 			if (!Memory::IsValidAddress(vaddress)) {
-				ERROR_LOG(LOADER, "Invalid address in symbol file: %08x (%s)", vaddress, name);
+				ERROR_LOG(Log::Loader, "Invalid address in symbol file: %08x (%s)", vaddress, name);
 				continue;
 			}
 		}
 
 		if (type == ST_DATA && size == 0)
 			size = 4;
+
+		// Ignore syscalls, will be recognized from stubs.
+		// Note: it's still useful to save these for grepping and importing into other tools.
+		if (strncmp(name, "zz_sce", 6) == 0)
+			continue;
+		// Also ignore unresolved imports, which will similarly be replaced.
+		if (strncmp(name, "zz_[UNK", 7) == 0)
+			continue;
 
 		if (!strcmp(name, ".text") || !strcmp(name, ".init") || strlen(name) <= 1) {
 
@@ -206,12 +213,12 @@ bool SymbolMap::LoadSymbolMap(const Path &filename) {
 	return started;
 }
 
-void SymbolMap::SaveSymbolMap(const Path &filename) const {
+bool SymbolMap::SaveSymbolMap(const Path &filename) const {
 	std::lock_guard<std::recursive_mutex> guard(lock_);
 
 	// Don't bother writing a blank file.
 	if (!File::Exists(filename) && functions.empty() && data.empty()) {
-		return;
+		return true;
 	}
 
 	// TODO(scoped): Use gzdopen
@@ -222,7 +229,7 @@ void SymbolMap::SaveSymbolMap(const Path &filename) const {
 #endif
 
 	if (f == Z_NULL)
-		return;
+		return false;
 
 	gzprintf(f, ".text\n");
 
@@ -241,6 +248,7 @@ void SymbolMap::SaveSymbolMap(const Path &filename) const {
 		gzprintf(f, "%08x %08x %x %i %s\n", e.start, e.size, e.module, ST_DATA, GetLabelNameRel(e.start, e.module));
 	}
 	gzclose(f);
+	return true;
 }
 
 bool SymbolMap::LoadNocashSym(const Path &filename) {
@@ -394,7 +402,7 @@ u32 SymbolMap::GetNextSymbolAddress(u32 address, SymbolType symmask) {
 
 std::string SymbolMap::GetDescription(unsigned int address) {
 	std::lock_guard<std::recursive_mutex> guard(lock_);
-	const char* labelName = NULL;
+	const char *labelName = nullptr;
 
 	u32 funcStart = GetFunctionStart(address);
 	if (funcStart != INVALID_ADDRESS) {
@@ -405,11 +413,11 @@ std::string SymbolMap::GetDescription(unsigned int address) {
 			labelName = GetLabelName(dataStart);
 	}
 
-	if (labelName != NULL)
+	if (labelName)
 		return labelName;
 
-	char descriptionTemp[256];
-	sprintf(descriptionTemp, "(%08x)", address);
+	char descriptionTemp[32];
+	snprintf(descriptionTemp, sizeof(descriptionTemp), "(%08x)", address);
 	return descriptionTemp;
 }
 
@@ -426,7 +434,7 @@ std::vector<SymbolEntry> SymbolMap::GetAllSymbols(SymbolType symmask) {
 			entry.address = it->first;
 			entry.size = GetFunctionSize(entry.address);
 			const char* name = GetLabelName(entry.address);
-			if (name != NULL)
+			if (name)
 				entry.name = name;
 			result.push_back(entry);
 		}
@@ -439,7 +447,7 @@ std::vector<SymbolEntry> SymbolMap::GetAllSymbols(SymbolType symmask) {
 			entry.address = it->first;
 			entry.size = GetDataSize(entry.address);
 			const char* name = GetLabelName(entry.address);
-			if (name != NULL)
+			if (name)
 				entry.name = name;
 			result.push_back(entry);
 		}
@@ -1105,7 +1113,7 @@ void SymbolMap::FillSymbolListBox(HWND listbox,SymbolType symType) {
 
 	case ST_DATA:
 		{
-			int count = ARRAYSIZE(defaultSymbols)+(int)activeData.size();
+			size_t count = ARRAYSIZE(defaultSymbols)+activeData.size();
 			SendMessage(listbox, LB_INITSTORAGE, (WPARAM)count, (LPARAM)count * 30);
 
 			for (int i = 0; i < ARRAYSIZE(defaultSymbols); i++) {
@@ -1126,6 +1134,9 @@ void SymbolMap::FillSymbolListBox(HWND listbox,SymbolType symType) {
 				ListBox_SetItemData(listbox,index,it->first);
 			}
 		}
+		break;
+	case ST_NONE:
+	case ST_ALL:
 		break;
 	}
 

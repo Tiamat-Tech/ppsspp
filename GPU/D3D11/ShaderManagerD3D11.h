@@ -20,6 +20,7 @@
 #include <map>
 
 #include <d3d11.h>
+#include <wrl/client.h>
 
 #include "Common/CommonTypes.h"
 #include "GPU/Common/ShaderCommon.h"
@@ -41,10 +42,10 @@ public:
 	bool UseHWTransform() const { return useHWTransform_; }
 
 	std::string GetShaderString(DebugShaderStringType type) const;
-	ID3D11PixelShader *GetShader() const { return module_; }
+	ID3D11PixelShader *GetShader() const { return module_.Get(); }
 
 protected:
-	ID3D11PixelShader *module_ = nullptr;
+	Microsoft::WRL::ComPtr<ID3D11PixelShader> module_;
 
 	ID3D11Device *device_;
 	std::string source_;
@@ -64,10 +65,10 @@ public:
 	bool UseHWTransform() const { return useHWTransform_; }
 
 	std::string GetShaderString(DebugShaderStringType type) const;
-	ID3D11VertexShader *GetShader() const { return module_; }
+	ID3D11VertexShader *GetShader() const { return module_.Get(); }
 
 protected:
-	ID3D11VertexShader *module_ = nullptr;
+	Microsoft::WRL::ComPtr<ID3D11VertexShader> module_;
 
 	ID3D11Device *device_;
 	std::string source_;
@@ -86,14 +87,16 @@ public:
 	~ShaderManagerD3D11();
 
 	void GetShaders(int prim, VertexDecoder *decoder, D3D11VertexShader **vshader, D3D11FragmentShader **fshader, const ComputedPipelineState &pipelineState, bool useHWTransform, bool useHWTessellation, bool weightsAsFloat, bool useSkinInDecode);
-	void ClearShaders();
+	void ClearShaders() override;
 	void DirtyLastShader() override;
 
+	void DeviceLost() override { draw_ = nullptr; }
+	void DeviceRestore(Draw::DrawContext *draw) override { draw_ = draw; }
 	int GetNumVertexShaders() const { return (int)vsCache_.size(); }
 	int GetNumFragmentShaders() const { return (int)fsCache_.size(); }
 
-	std::vector<std::string> DebugGetShaderIDs(DebugShaderType type);
-	std::string DebugGetShaderString(std::string id, DebugShaderType type, DebugShaderStringType stringType);
+	std::vector<std::string> DebugGetShaderIDs(DebugShaderType type) override;
+	std::string DebugGetShaderString(std::string id, DebugShaderType type, DebugShaderStringType stringType) override;
 
 	uint64_t UpdateUniforms(bool useBufferedRendering);
 	void BindUniforms();
@@ -125,9 +128,9 @@ private:
 	UB_VS_Bones ub_bones;
 
 	// Not actual pushbuffers, requires D3D11.1, let's try to live without that first.
-	ID3D11Buffer *push_base;
-	ID3D11Buffer *push_lights;
-	ID3D11Buffer *push_bones;
+	Microsoft::WRL::ComPtr<ID3D11Buffer> push_base;
+	Microsoft::WRL::ComPtr<ID3D11Buffer> push_lights;
+	Microsoft::WRL::ComPtr<ID3D11Buffer> push_bones;
 
 	D3D11FragmentShader *lastFShader_ = nullptr;
 	D3D11VertexShader *lastVShader_ = nullptr;

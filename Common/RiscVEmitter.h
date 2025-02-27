@@ -213,6 +213,19 @@ public:
 	bool BInRange(const void *func) const;
 	bool JInRange(const void *func) const;
 
+	void QuickJAL(RiscVReg scratchreg, RiscVReg rd, const u8 *dst);
+	void QuickJ(RiscVReg scratchreg, const u8 *dst) {
+		QuickJAL(scratchreg, R_ZERO, dst);
+	}
+	void QuickCallFunction(const u8 *func, RiscVReg scratchreg = R_RA) {
+		QuickJAL(scratchreg, R_RA, func);
+	}
+	template <typename T>
+	void QuickCallFunction(T *func, RiscVReg scratchreg = R_RA) {
+		static_assert(std::is_function<T>::value, "QuickCallFunction without function");
+		QuickCallFunction((const u8 *)func, scratchreg);
+	}
+
 	void LUI(RiscVReg rd, s32 simm32);
 	void AUIPC(RiscVReg rd, s32 simm32);
 
@@ -301,6 +314,12 @@ public:
 
 	void NEG(RiscVReg rd, RiscVReg rs) {
 		SUB(rd, R_ZERO, rs);
+	}
+	void SNEZ(RiscVReg rd, RiscVReg rs) {
+		SLTU(rd, R_ZERO, rs);
+	}
+	void SEQZ(RiscVReg rd, RiscVReg rs) {
+		SLTIU(rd, rs, 1);
 	}
 
 	void FENCE(Fence predecessor, Fence successor);
@@ -401,6 +420,26 @@ public:
 	void FLT(int bits, RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
 	void FLE(int bits, RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
 	void FCLASS(int bits, RiscVReg rd, RiscVReg rs1);
+
+	// Additional floating point (Zfa.)
+	bool CanFLI(int bits, double v) const;
+	bool CanFLI(int bits, uint32_t pattern) const;
+	bool CanFLI(int bits, float v) const {
+		return CanFLI(bits, (double)v);
+	}
+	void FLI(int bits, RiscVReg rd, double v);
+	void FLI(int bits, RiscVReg rd, uint32_t pattern);
+	void FLI(int bits, RiscVReg rd, float v) {
+		FLI(bits, rd, (double)v);
+	}
+	void FMINM(int bits, RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
+	void FMAXM(int bits, RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
+	void FROUND(int bits, RiscVReg rd, RiscVReg rs1, Round rm = Round::DYNAMIC);
+
+	// Convenience helper for FLI support.
+	void QuickFLI(int bits, RiscVReg rd, double v, RiscVReg scratchReg);
+	void QuickFLI(int bits, RiscVReg rd, uint32_t pattern, RiscVReg scratchReg);
+	void QuickFLI(int bits, RiscVReg rd, float v, RiscVReg scratchReg);
 
 	// Control state register manipulation.
 	void CSRRW(RiscVReg rd, Csr csr, RiscVReg rs1);
@@ -876,6 +915,23 @@ public:
 	void VCOMPRESS_VM(RiscVReg vd, RiscVReg vs2, RiscVReg vs1);
 	void VMVR_V(int regs, RiscVReg vd, RiscVReg vs2);
 
+	void VANDN_VV(RiscVReg vd, RiscVReg vs2, RiscVReg vs1, VUseMask vm = VUseMask::NONE);
+	void VANDN_VX(RiscVReg vd, RiscVReg vs2, RiscVReg rs1, VUseMask vm = VUseMask::NONE);
+	void VBREV_V(RiscVReg vd, RiscVReg vs2, VUseMask vm = VUseMask::NONE);
+	void VBREV8_V(RiscVReg vd, RiscVReg vs2, VUseMask vm = VUseMask::NONE);
+	void VREV8_V(RiscVReg vd, RiscVReg vs2, VUseMask vm = VUseMask::NONE);
+	void VCLZ_V(RiscVReg vd, RiscVReg vs2, VUseMask vm = VUseMask::NONE);
+	void VCTZ_V(RiscVReg vd, RiscVReg vs2, VUseMask vm = VUseMask::NONE);
+	void VCPOP_V(RiscVReg vd, RiscVReg vs2, VUseMask vm = VUseMask::NONE);
+	void VROL_VV(RiscVReg vd, RiscVReg vs2, RiscVReg vs1, VUseMask vm = VUseMask::NONE);
+	void VROL_VX(RiscVReg vd, RiscVReg vs2, RiscVReg rs1, VUseMask vm = VUseMask::NONE);
+	void VROR_VV(RiscVReg vd, RiscVReg vs2, RiscVReg vs1, VUseMask vm = VUseMask::NONE);
+	void VROR_VX(RiscVReg vd, RiscVReg vs2, RiscVReg rs1, VUseMask vm = VUseMask::NONE);
+	void VROR_VI(RiscVReg vd, RiscVReg vs2, u8 uimm6, VUseMask vm = VUseMask::NONE);
+	void VWSLL_VV(RiscVReg vd, RiscVReg vs2, RiscVReg vs1, VUseMask vm = VUseMask::NONE);
+	void VWSLL_VX(RiscVReg vd, RiscVReg vs2, RiscVReg rs1, VUseMask vm = VUseMask::NONE);
+	void VWSLL_VI(RiscVReg vd, RiscVReg vs2, u8 uimm5, VUseMask vm = VUseMask::NONE);
+
 	// Bitmanip instructions.
 	void ADD_UW(RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
 	void SH_ADD(int shift, RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
@@ -896,6 +952,12 @@ public:
 	void MINU(RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
 	void SEXT_B(RiscVReg rd, RiscVReg rs);
 	void SEXT_H(RiscVReg rd, RiscVReg rs);
+	void SEXT_W(RiscVReg rd, RiscVReg rs) {
+		ADDIW(rd, rs, 0);
+	}
+	void ZEXT_B(RiscVReg rd, RiscVReg rs) {
+		ANDI(rd, rs, 0xFF);
+	}
 	void ZEXT_H(RiscVReg rd, RiscVReg rs);
 	void ZEXT_W(RiscVReg rd, RiscVReg rs) {
 		ADD_UW(rd, rs, R_ZERO);
@@ -919,6 +981,9 @@ public:
 	void BINVI(RiscVReg rd, RiscVReg rs1, u32 shamt);
 	void BSET(RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
 	void BSETI(RiscVReg rd, RiscVReg rs1, u32 shamt);
+
+	void CZERO_EQZ(RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
+	void CZERO_NEZ(RiscVReg rd, RiscVReg rs1, RiscVReg rs2);
 
 	// Compressed instructions.
 	void C_ADDI4SPN(RiscVReg rd, u32 nzuimm10);
@@ -969,6 +1034,22 @@ public:
 	void C_SWSP(RiscVReg rs2, u8 uimm8);
 	void C_FSWSP(RiscVReg rs2, u8 uimm8);
 	void C_SDSP(RiscVReg rs2, u32 uimm9);
+
+	void C_LBU(RiscVReg rd, RiscVReg rs1, u8 uimm2);
+	void C_LHU(RiscVReg rd, RiscVReg rs1, u8 uimm2);
+	void C_LH(RiscVReg rd, RiscVReg rs1, u8 uimm2);
+	void C_SB(RiscVReg rs2, RiscVReg rs1, u8 uimm2);
+	void C_SH(RiscVReg rs2, RiscVReg rs1, u8 uimm2);
+	void C_ZEXT_B(RiscVReg rd);
+	void C_SEXT_B(RiscVReg rd);
+	void C_ZEXT_H(RiscVReg rd);
+	void C_SEXT_H(RiscVReg rd);
+	void C_ZEXT_W(RiscVReg rd);
+	void C_SEXT_W(RiscVReg rd) {
+		C_ADDIW(rd, 0);
+	}
+	void C_NOT(RiscVReg rd);
+	void C_MUL(RiscVReg rd, RiscVReg rs2);
 
 	bool CBInRange(const void *func) const;
 	bool CJInRange(const void *func) const;

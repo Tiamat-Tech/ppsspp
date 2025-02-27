@@ -15,40 +15,41 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
+#include "ppsspp_config.h"
+
 #include <cmath>
-#include <algorithm>
 
 #include "Common/Common.h"
 #include "Common/CPUDetect.h"
 #include "Common/Math/math_util.h"
 #include "Common/MemoryUtil.h"
 #include "Common/Profiler/Profiler.h"
-#include "Core/Config.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/DrawEngineCommon.h"
 #include "GPU/Common/VertexDecoderCommon.h"
-#include "GPU/Common/SplineCommon.h"
-#include "GPU/Common/TextureDecoder.h"
-#include "GPU/Debugger/Debugger.h"
+#include "GPU/Common/SoftwareTransformCommon.h"
+#include "Common/Math/SIMDHeaders.h"
 #include "GPU/Software/BinManager.h"
 #include "GPU/Software/Clipper.h"
-#include "GPU/Software/FuncId.h"
 #include "GPU/Software/Lighting.h"
-#include "GPU/Software/Rasterizer.h"
 #include "GPU/Software/RasterizerRectangle.h"
 #include "GPU/Software/TransformUnit.h"
+
+// For the SSE4 stuff
+#if PPSSPP_ARCH(SSE2)
+#include <smmintrin.h>
+#endif
 
 #define TRANSFORM_BUF_SIZE (65536 * 48)
 
 TransformUnit::TransformUnit() {
-	decoded_ = (u8 *)AllocateMemoryPages(TRANSFORM_BUF_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
-	if (!decoded_)
-		return;
+	decoded_ = (u8 *)AllocateAlignedMemory(TRANSFORM_BUF_SIZE, 16);
+	_assert_(decoded_);
 	binner_ = new BinManager();
 }
 
 TransformUnit::~TransformUnit() {
-	FreeMemoryPages(decoded_, TRANSFORM_BUF_SIZE);
+	FreeAlignedMemory(decoded_);
 	delete binner_;
 }
 
@@ -57,28 +58,22 @@ bool TransformUnit::IsStarted() {
 }
 
 SoftwareDrawEngine::SoftwareDrawEngine() {
-	// All this is a LOT of memory, need to see if we can cut down somehow.  Used for splines.
-	decoded = (u8 *)AllocateMemoryPages(DECODED_VERTEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
-	decIndex = (u16 *)AllocateMemoryPages(DECODED_INDEX_BUFFER_SIZE, MEM_PROT_READ | MEM_PROT_WRITE);
 	flushOnParams_ = false;
 }
 
-SoftwareDrawEngine::~SoftwareDrawEngine() {
-	FreeMemoryPages(decoded, DECODED_VERTEX_BUFFER_SIZE);
-	FreeMemoryPages(decIndex, DECODED_INDEX_BUFFER_SIZE);
-}
+SoftwareDrawEngine::~SoftwareDrawEngine() {}
 
 void SoftwareDrawEngine::NotifyConfigChanged() {
 	DrawEngineCommon::NotifyConfigChanged();
-	decOptions_.applySkinInDecode = true;
+	applySkinInDecode_ = true;
 }
 
-void SoftwareDrawEngine::DispatchFlush() {
-	transformUnit.Flush("debug");
+void SoftwareDrawEngine::Flush() {
+	transformUnit.Flush(gpuCommon_, "debug");
 }
 
-void SoftwareDrawEngine::DispatchSubmitPrim(const void *verts, const void *inds, GEPrimitiveType prim, int vertexCount, u32 vertTypeID, int cullMode, int *bytesRead) {
-	_assert_msg_(cullMode == gstate.getCullMode(), "Mixed cull mode not supported.");
+void SoftwareDrawEngine::DispatchSubmitPrim(const void *verts, const void *inds, GEPrimitiveType prim, int vertexCount, u32 vertTypeID, bool clockwise, int *bytesRead) {
+	_assert_msg_(clockwise, "Mixed cull mode not supported.");
 	transformUnit.SubmitPrimitive(verts, inds, prim, vertexCount, vertTypeID, bytesRead, this);
 }
 
@@ -160,14 +155,6 @@ WorldCoords TransformUnit::ModelToWorldNormal(const ModelCoords &coords) {
 	return Norm3ByMatrix43(coords, gstate.worldMatrix);
 }
 
-ViewCoords TransformUnit::WorldToView(const WorldCoords &coords) {
-	return Vec3ByMatrix43(coords, gstate.viewMatrix);
-}
-
-ClipCoords TransformUnit::ViewToClip(const ViewCoords &coords) {
-	return Vec3ByMatrix44(coords, gstate.projMatrix);
-}
-
 template <bool depthClamp, bool alwaysCheckRange>
 static ScreenCoords ClipToScreenInternal(Vec3f scaled, const ClipCoords &coords, bool *outside_range_flag) {
 	ScreenCoords ret;
@@ -177,7 +164,7 @@ static ScreenCoords ClipToScreenInternal(Vec3f scaled, const ClipCoords &coords,
 	const float SCREEN_BOUND = 4095.0f + (15.5f / 16.0f);
 
 	// This matches hardware tests - depth is clamped when this flag is on.
-	if (depthClamp) {
+	if constexpr (depthClamp) {
 		// Note: if the depth is clipped (z/w <= -1.0), the outside_range_flag should NOT be set, even for x and y.
 		if ((alwaysCheckRange || coords.z > -coords.w) && (scaled.x >= SCREEN_BOUND || scaled.y >= SCREEN_BOUND || scaled.x < 0 || scaled.y < 0)) {
 			*outside_range_flag = true;
@@ -273,12 +260,9 @@ void ComputeTransformState(TransformState *state, const VertexReader &vreader) {
 		bool canSkipWorldPos = true;
 		if (state->enableLighting) {
 			Lighting::ComputeState(&state->lightingState, vreader.hasColor0());
-			for (int i = 0; i < 4; ++i) {
-				if (!state->lightingState.lights[i].enabled)
-					continue;
-				if (!state->lightingState.lights[i].directional)
-					canSkipWorldPos = false;
-			}
+			canSkipWorldPos = !state->lightingState.usesWorldPos;
+		} else {
+			state->lightingState.usesWorldNormal = state->uvGenMode == GE_TEXMAP_ENVIRONMENT_MAP;
 		}
 
 		float world[16];
@@ -339,6 +323,31 @@ void ComputeTransformState(TransformState *state, const VertexReader &vreader) {
 		state->roundToScreen = &ClipToScreenInternal<true, false>;
 	else
 		state->roundToScreen = &ClipToScreenInternal<false, false>;
+}
+
+#if defined(_M_SSE)
+#if defined(__GNUC__) || defined(__clang__) || defined(__INTEL_COMPILER)
+[[gnu::target("sse4.1")]]
+#endif
+static inline __m128 Dot43SSE4(__m128 a, __m128 b) {
+	__m128 multiplied = _mm_mul_ps(a, _mm_insert_ps(b, _mm_set1_ps(1.0f), 0x30));
+	__m128 lanes3311 = _mm_movehdup_ps(multiplied);
+	__m128 partial = _mm_add_ps(multiplied, lanes3311);
+	return _mm_add_ss(partial, _mm_movehl_ps(lanes3311, partial));
+}
+#endif
+
+static inline float Dot43(const Vec4f &a, const Vec3f &b) {
+#if defined(_M_SSE) && !PPSSPP_ARCH(X86)
+	if (cpu_info.bSSE4_1)
+		return _mm_cvtss_f32(Dot43SSE4(a.vec, b.vec));
+#elif PPSSPP_ARCH(ARM64_NEON)
+	float32x4_t multipled = vmulq_f32(a.vec, vsetq_lane_f32(1.0f, b.vec, 3));
+	float32x2_t add1 = vget_low_f32(vpaddq_f32(multipled, multipled));
+	float32x2_t add2 = vpadd_f32(add1, add1);
+	return vget_lane_f32(add2, 0);
+#endif
+	return Dot(a, Vec4f(b, 1.0f));
 }
 
 ClipVertexData TransformUnit::ReadVertex(const VertexReader &vreader, const TransformState &state) {
@@ -405,14 +414,14 @@ ClipVertexData TransformUnit::ReadVertex(const VertexReader &vreader, const Tran
 		}
 
 		if (state.enableFog) {
-			vertex.v.fogdepth = Dot(state.posToFog, Vec4f(pos, 1.0f));
+			vertex.v.fogdepth = Dot43(state.posToFog, pos);
 		} else {
 			vertex.v.fogdepth = 1.0f;
 		}
 		vertex.v.clipw = vertex.clippos.w;
 
 		Vec3<float> worldnormal;
-		if (state.enableLighting || state.uvGenMode == GE_TEXMAP_ENVIRONMENT_MAP) {
+		if (state.lightingState.usesWorldNormal) {
 			worldnormal = TransformUnit::ModelToWorldNormal(normal);
 			worldnormal.NormalizeOr001();
 		}
@@ -478,12 +487,12 @@ public:
 		if (useIndices_)
 			GetIndexBounds(indices, vertex_count, vertex_type, &lowerBound_, &upperBound_);
 		if (vertex_count != 0)
-			vdecoder.DecodeVerts(base, vertices, lowerBound_, upperBound_);
+			vdecoder.DecodeVerts(base, vertices, &gstate_c.uv, lowerBound_, upperBound_);
 
 		// If we're only using a subset of verts, it's better to decode with random access (usually.)
 		// However, if we're reusing a lot of verts, we should read and cache them.
 		useCache_ = useIndices_ && vertex_count > (upperBound_ - lowerBound_ + 1);
-		if (useCache_ && cached_.size() < upperBound_ - lowerBound_ + 1)
+		if (useCache_ && (int)cached_.size() < upperBound_ - lowerBound_ + 1)
 			cached_.resize(std::max(128, upperBound_ - lowerBound_ + 1));
 	}
 
@@ -819,7 +828,7 @@ void TransformUnit::SubmitPrimitive(const void* vertices, const void* indices, G
 		}
 
 	default:
-		ERROR_LOG(G3D, "Unexpected prim type: %d", prim_type);
+		ERROR_LOG(Log::G3D, "Unexpected prim type: %d", prim_type);
 		break;
 	}
 }
@@ -876,12 +885,12 @@ void TransformUnit::SendTriangle(CullType cullType, const ClipVertexData *verts,
 	}
 }
 
-void TransformUnit::Flush(const char *reason) {
+void TransformUnit::Flush(GPUCommon *common, const char *reason) {
 	if (!hasDraws_)
 		return;
 
 	binner_->Flush(reason);
-	GPUDebug::NotifyDraw();
+	common->NotifyFlush();
 	hasDraws_ = false;
 }
 
@@ -890,14 +899,14 @@ void TransformUnit::GetStats(char *buffer, size_t bufsize) {
 	binner_->GetStats(buffer, bufsize);
 }
 
-void TransformUnit::FlushIfOverlap(const char *reason, bool modifying, uint32_t addr, uint32_t stride, uint32_t w, uint32_t h) {
+void TransformUnit::FlushIfOverlap(GPUCommon *common, const char *reason, bool modifying, uint32_t addr, uint32_t stride, uint32_t w, uint32_t h) {
 	if (!hasDraws_)
 		return;
 
 	if (binner_->HasPendingWrite(addr, stride, w, h))
-		Flush(reason);
+		Flush(common, reason);
 	if (modifying && binner_->HasPendingRead(addr, stride, w, h))
-		Flush(reason);
+		Flush(common, reason);
 }
 
 void TransformUnit::NotifyClutUpdate(const void *src) {
@@ -906,7 +915,7 @@ void TransformUnit::NotifyClutUpdate(const void *src) {
 
 // TODO: This probably is not the best interface.
 // Also, we should try to merge this into the similar function in DrawEngineCommon.
-bool TransformUnit::GetCurrentSimpleVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) {
+bool TransformUnit::GetCurrentDrawAsDebugVertices(int count, std::vector<GPUDebugVertex> &vertices, std::vector<u16> &indices) {
 	// This is always for the current vertices.
 	u16 indexLowerBound = 0;
 	u16 indexUpperBound = count - 1;
@@ -934,11 +943,11 @@ bool TransformUnit::GetCurrentSimpleVertices(int count, std::vector<GPUDebugVert
 				}
 				break;
 			case GE_VTYPE_IDX_32BIT:
-				WARN_LOG_REPORT_ONCE(simpleIndexes32, G3D, "SimpleVertices: Decoding 32-bit indexes");
+				WARN_LOG_REPORT_ONCE(simpleIndexes32, Log::G3D, "SimpleVertices: Decoding 32-bit indexes");
 				for (int i = 0; i < count; ++i) {
 					// These aren't documented and should be rare.  Let's bounds check each one.
 					if (inds32[i] != (u16)inds32[i]) {
-						ERROR_LOG_REPORT_ONCE(simpleIndexes32Bounds, G3D, "SimpleVertices: Index outside 16-bit range");
+						ERROR_LOG_REPORT_ONCE(simpleIndexes32Bounds, Log::G3D, "SimpleVertices: Index outside 16-bit range");
 					}
 					indices[i] = (u16)inds32[i];
 				}
@@ -958,13 +967,13 @@ bool TransformUnit::GetCurrentSimpleVertices(int count, std::vector<GPUDebugVert
 
 	VertexDecoder vdecoder;
 	VertexDecoderOptions options{};
-	options.applySkinInDecode = true;
-	vdecoder.SetVertexType(gstate.vertType, options);
+	u32 vertTypeID = GetVertTypeID(gstate.vertType, gstate.getUVGenMode(), true);
+	vdecoder.SetVertexType(vertTypeID, options);
 
 	if (!Memory::IsValidRange(gstate_c.vertexAddr, (indexUpperBound + 1) * vdecoder.VertexSize()))
 		return false;
 
-	DrawEngineCommon::NormalizeVertices((u8 *)(&simpleVertices[0]), (u8 *)(&temp_buffer[0]), Memory::GetPointer(gstate_c.vertexAddr), &vdecoder, indexLowerBound, indexUpperBound, gstate.vertType);
+	::NormalizeVertices(&simpleVertices[0], (u8 *)(&temp_buffer[0]), Memory::GetPointer(gstate_c.vertexAddr), indexLowerBound, indexUpperBound, &vdecoder, gstate.vertType);
 
 	float world[16];
 	float view[16];

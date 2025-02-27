@@ -1,4 +1,4 @@
-DEBUG=0
+DEBUG     := 0
 WITH_DYNAREC := 1
 
 DYNAFLAGS :=
@@ -300,16 +300,12 @@ else ifneq (,$(findstring armv,$(platform)))
 
 # emscripten
 else ifeq ($(platform), emscripten)
+	TARGET_ARCH = wasm32
+	GLES = 1
 	TARGET := $(TARGET_NAME)_libretro_emscripten.bc
-	GLES := 1
-	CPUFLAGS +=
-	PLATCFLAGS += -DCC_resampler=mupen_CC_resampler -Dsinc_resampler=mupen_sinc_resampler \
-					-Drglgen_symbol_map=mupen_rglgen_symbol_map -Dmain_exit=mupen_main_exit \
-					-Dadler32=mupen_adler32 -Drarch_resampler_realloc=mupen_rarch_resampler_realloc \
-					-Daudio_convert_s16_to_float_C=mupen_audio_convert_s16_to_float_C -Daudio_convert_float_to_s16_C=mupen_audio_convert_float_to_s16_C \
-					-Daudio_convert_init_simd=mupen_audio_convert_init_simd -Drglgen_resolve_symbols_custom=mupen_rglgen_resolve_symbols_custom \
-					-Drglgen_resolve_symbols=mupen_rglgen_resolve_symbols
-	PLATFORM_EXT = unix
+	PLATCFLAGS += -msimd128 -msse3 -mssse3 -msse4.1 -pthread -D__EMSCRIPTEN__ -DNO_MMAP
+	PLATFORM_EXT = emscripten
+	STATIC_LINKING = 1
 
 # Windows MSVC all architectures
 else ifneq (,$(findstring windows_msvc2019,$(platform)))
@@ -384,11 +380,9 @@ else ifneq (,$(findstring windows_msvc2019,$(platform)))
 	ifneq (,$(findstring x64,$(TargetArchMoniker)))
 		override TARGET_ARCH = x86_64
 		VCCompilerToolsBinDir := $(VcCompilerToolsDir)/bin/HostX64/$(TargetArchMoniker)
-      LIB := $(LIB);$(CORE_DIR)/dx9sdk/Lib/x64
 	else
 		override TARGET_ARCH = x86
 		VCCompilerToolsBinDir := $(VcCompilerToolsDir)/bin/HostX86/$(TargetArchMoniker)
-      LIB := $(LIB);$(CORE_DIR)/dx9sdk/Lib/x86
 	endif
 
 	PATH := $(shell IFS=$$'\n'; cygpath "$(VCCompilerToolsBinDir)"):$(PATH)
@@ -404,24 +398,18 @@ else ifneq (,$(findstring windows_msvc2019,$(platform)))
 	FFMPEGLIBDIR := $(FFMPEGDIR)/Windows/$(TARGET_ARCH)/lib
 	FFMPEGLDFLAGS += -LIBPATH:$(FFMPEGLIBDIR)
 	GL_LIB := opengl32.lib
-	LDFLAGS += ws2_32.lib user32.lib shell32.lib avcodec.lib avutil.lib swresample.lib swscale.lib avformat.lib advapi32.lib winmm.lib gdi32.lib d3d9.lib d3dx9.lib Iphlpapi.lib
+	LDFLAGS += ws2_32.lib user32.lib shell32.lib avcodec.lib avutil.lib swresample.lib swscale.lib avformat.lib advapi32.lib winmm.lib gdi32.lib d3d9.lib Iphlpapi.lib
 
 # Windows
 else ifneq (,$(findstring win,$(platform)))
 	TARGET := $(TARGET_NAME)_libretro.dll
 	CFLAGS += -D_UNICODE -DUNICODE
 	CXXFLAGS += -fpermissive -Wno-multichar -D_UNICODE -DUNICODE -DARMIPS_USE_STD_FILESYSTEM
-	LDFLAGS += -shared -Wl,--no-undefined -static-libgcc -static-libstdc++ -Wl,--version-script=link.T -lwinmm -lgdi32 -lwsock32 -lws2_32 -ld3d9 -ld3dx9
+	LDFLAGS += -shared -Wl,--no-undefined -static-libgcc -static-libstdc++ -Wl,--version-script=link.T -lwinmm -lgdi32 -lwsock32 -lws2_32 -ld3d9
 	GL_LIB := -lopengl32
 	PLATFORM_EXT = win32
    FFMPEGINCFLAGS += -I$(FFMPEGDIR)/Windows/$(TARGET_ARCH)/include
    FFMPEGLDFLAGS += -lavformat -lavcodec -lavutil -lswresample -lswscale
-   INCFLAGS += -include $(CORE_DIR)/Windows/mingw_defines.h
-   ifneq (,$(findstring 64,$(TARGET_ARCH)))
-		LDFLAGS += -L$(CORE_DIR)/dx9sdk/Lib/x64
-	else
-		LDFLAGS += -L$(CORE_DIR)/dx9sdk/Lib/x86
-	endif
    fpic = -fPIC
 	CC = gcc
 	CXX = g++
@@ -435,7 +423,11 @@ else
 	GLFLAGS += -DHAVE_OPENGL
 endif
 
-COREFLAGS += -D__LIBRETRO__ -DPPSSPP -DUSE_FFMPEG -DWITH_UPNP -DGLEW_STATIC -DGLEW_NO_GLU -DMINIUPNP_STATICLIB
+COREFLAGS += -D__LIBRETRO__ -DPPSSPP -DWITH_UPNP -DGLEW_STATIC -DGLEW_NO_GLU -DMINIUPNP_STATICLIB
+ifneq ($(platform), emscripten)
+	# ffmpeg does not work with emscripten
+	COREFLAGS += -DUSE_FFMPEG
+endif
 
 ifeq ($(DEBUG), 1)
 	ifneq (,$(findstring msvc,$(platform)))
@@ -445,6 +437,8 @@ ifeq ($(DEBUG), 1)
 		CPUOPTS += -O0 -g
 	endif
 	CPUOPTS += -D_DEBUG
+else ifeq ($(platform), emscripten)
+	CPUOPTS += -O3 -DNDEBUG
 else
 	CPUOPTS += -O2 -DNDEBUG
 endif
@@ -494,7 +488,7 @@ all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
 ifeq ($(STATIC_LINKING), 1)
-	$(AR) rcs $A $(OBJECTS)
+	$(AR) rcs $(TARGET) $(OBJECTS)
 else
 	$(LD) $(LINKOUT)$@ $(OBJECTS) $(LDFLAGS) $(GL_LIB)
 endif

@@ -22,14 +22,13 @@
 #include <cstdint>
 #include <atomic>
 
-#include "Common/Serialize/Serializer.h"
 #include "Common/CommonTypes.h"
 
 struct AudioDebugStats;
 
 class StereoResampler {
 public:
-	StereoResampler();
+	StereoResampler() noexcept;
 	~StereoResampler();
 
 	// Called from audio threads
@@ -37,11 +36,10 @@ public:
 
 	// Called from main thread
 	// This clamps the samples to 16-bit before starting to work on them.
-	void PushSamples(const s32* samples, unsigned int num_samples);
+	// Volume is a multiplier from 0.0f to 1.0f.
+	void PushSamples(const s32* samples, unsigned int num_samples, float volume);
 
 	void Clear();
-
-	void DoState(PointerWrap &p);
 
 	void GetAudioDebugStats(char *buf, size_t bufSize);
 	void ResetStatCounters();

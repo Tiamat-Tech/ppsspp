@@ -15,20 +15,16 @@
 // Official git repository and contact information can be found at
 // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
 
-#include <cstdio>
-#include <cstdlib>
-#include <locale.h>
-
 #include "Common/StringUtils.h"
 #include "Common/GPU/OpenGL/GLFeatures.h"
 #include "Common/GPU/ShaderWriter.h"
 #include "Common/GPU/thin3d.h"
 #include "Core/Config.h"
+#include "Core/System.h"
 #include "GPU/ge_constants.h"
 #include "GPU/GPUState.h"
 #include "GPU/Common/ShaderId.h"
 #include "GPU/Common/ShaderUniforms.h"
-#include "GPU/Common/VertexDecoderCommon.h"
 #include "GPU/Common/VertexShaderGenerator.h"
 #include "GPU/Vulkan/DrawEngineVulkan.h"
 
@@ -136,6 +132,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 	bool highpTexcoord = false;
 
 	std::vector<const char*> extensions;
+	extensions.reserve(6);
 	if (ShaderLanguageIsOpenGL(compat.shaderLanguage)) {
 		if (gl_extensions.EXT_gpu_shader4) {
 			extensions.push_back("#extension GL_EXT_gpu_shader4 : enable");
@@ -149,9 +146,6 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		}
 		if (gl_extensions.ARB_cull_distance && id.Bit(VS_BIT_VERTEX_RANGE_CULLING)) {
 			extensions.push_back("#extension GL_ARB_cull_distance : enable");
-		}
-		if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY) && gstate_c.Use(GPU_USE_SINGLE_PASS_STEREO)) {
-			extensions.push_back("#extension GL_OVR_multiview2 : enable\nlayout(num_views=2) in;");
 		}
 	}
 
@@ -285,7 +279,9 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		}
 
 		WRITE(p, "layout (location = 1) %sout lowp vec4 v_color0;\n", shading);
-		WRITE(p, "layout (location = 2) %sout lowp vec3 v_color1;\n", shading);
+		if (lmode) {
+			WRITE(p, "layout (location = 2) %sout lowp vec3 v_color1;\n", shading);
+		}
 
 		WRITE(p, "layout (location = 0) out highp vec3 v_texcoord;\n");
 
@@ -416,7 +412,9 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		WRITE(p, "  vec3 v_texcoord : TEXCOORD0;\n");
 		const char *colorInterpolation = doFlatShading && compat.shaderLanguage == HLSL_D3D11 ? "nointerpolation " : "";
 		WRITE(p, "  %svec4 v_color0    : COLOR0;\n", colorInterpolation);
-		WRITE(p, "  vec3 v_color1    : COLOR1;\n");
+		if (lmode) {
+			WRITE(p, "  vec3 v_color1    : COLOR1;\n");
+		}
 
 		WRITE(p, "  float v_fogdepth : TEXCOORD1;\n");
 		if (compat.shaderLanguage == HLSL_D3D9) {
@@ -489,11 +487,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			*uniformMask |= DIRTY_PROJTHROUGHMATRIX;
 		} else if (useHWTransform) {
 			if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
-				if (gstate_c.Use(GPU_USE_SINGLE_PASS_STEREO)) {
-					WRITE(p, "layout(shared) uniform ProjectionMatrix { uniform mat4 u_proj_lens[2]; };\n");
-				} else {
-					WRITE(p, "uniform mat4 u_proj_lens;\n");
-				}
+				WRITE(p, "uniform mat4 u_proj_lens;\n");
 			}
 			WRITE(p, "uniform mat4 u_proj;\n");
 			*uniformMask |= DIRTY_PROJMATRIX;
@@ -503,11 +497,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			// When transforming by hardware, we need a great deal more uniforms...
 			// TODO: Use 4x3 matrices where possible. Though probably doesn't matter much.
 			WRITE(p, "uniform mat4 u_world;\n");
-			if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY) && gstate_c.Use(GPU_USE_SINGLE_PASS_STEREO)) {
-				WRITE(p, "layout(shared) uniform ViewMatrices { uniform mat4 u_view[2]; };\n");
-			} else {
-				WRITE(p, "uniform mat4 u_view;\n");
-			}
+			WRITE(p, "uniform mat4 u_view;\n");
 			*uniformMask |= DIRTY_WORLDMATRIX | DIRTY_VIEWMATRIX;
 			if (doTextureTransform) {
 				WRITE(p, "uniform mediump mat4 u_texmtx;\n");
@@ -576,10 +566,8 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			WRITE(p, "uniform lowp vec4 u_matambientalpha;\n");  // matambient + matalpha
 			*uniformMask |= DIRTY_MATAMBIENTALPHA;
 		}
-		if (useHWTransform) {
-			WRITE(p, "uniform highp vec2 u_fogcoef;\n");
-			*uniformMask |= DIRTY_FOGCOEFENABLE;
-		}
+		WRITE(p, "uniform highp vec2 u_fogcoef;\n");
+		*uniformMask |= DIRTY_FOGCOEF;
 
 		if (!isModeThrough) {
 			WRITE(p, "uniform highp vec4 u_depthRange;\n");
@@ -589,7 +577,9 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		}
 
 		WRITE(p, "%s%s lowp vec4 v_color0;\n", shading, compat.varying_vs);
-		WRITE(p, "%s%s lowp vec3 v_color1;\n", shading, compat.varying_vs);
+		if (lmode) {
+			WRITE(p, "%s%s lowp vec3 v_color1;\n", shading, compat.varying_vs);
+		}
 
 		WRITE(p, "%s %s vec3 v_texcoord;\n", compat.varying_vs, highpTexcoord ? "highp" : "mediump");
 
@@ -821,13 +811,14 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		}
 		if (hasColor) {
 			WRITE(p, "  %sv_color0 = color0;\n", compat.vsOutPrefix);
-			if (lmode)
+			if (lmode) {
 				WRITE(p, "  %sv_color1 = color1;\n", compat.vsOutPrefix);
-			else
-				WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
+			}
 		} else {
 			WRITE(p, "  %sv_color0 = u_matambientalpha;\n", compat.vsOutPrefix);
-			WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
+			if (lmode) {
+				WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
+			}
 		}
 		WRITE(p, "  %sv_fogdepth = fog;\n", compat.vsOutPrefix);
 		if (isModeThrough)	{
@@ -881,7 +872,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 					WRITE(p, "  mediump vec3 worldnormal = normalizeOr001(mul(vec4(0.0, 0.0, %s1.0, 0.0), u_world).xyz);\n", flipNormal ? "-" : "");
 			}
 		} else {
-			static const char *rescale[4] = {"", " * 1.9921875", " * 1.999969482421875", ""}; // 2*127.5f/128.f, 2*32767.5f/32768.f, 1.0f};
+			static const char * const rescale[4] = {"", " * 1.9921875", " * 1.999969482421875", ""}; // 2*127.5f/128.f, 2*32767.5f/32768.f, 1.0f};
 			const char *factor = rescale[boneWeightScale];
 
 			static const char * const boneWeightAttr[8] = {
@@ -920,24 +911,27 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			WRITE(p, "  mediump vec3 worldnormal = normalizeOr001(mul(vec4(skinnednormal, 0.0), u_world).xyz);\n");
 		}
 
-		std::string matrixPostfix;
-		if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY) && gstate_c.Use(GPU_USE_SINGLE_PASS_STEREO)) {
-			matrixPostfix = "[gl_ViewID_OVR]";
+		WRITE(p, "  vec4 viewPos = vec4(mul(vec4(worldpos, 1.0), u_view).xyz, 1.0);\n");
+		if (useSimpleStereo) {
+			float ipd = 0.065f;
+			float scale = 1.0f;
+			if (PSP_CoreParameter().compat.vrCompat().UnitsPerMeter > 0) {
+				scale = PSP_CoreParameter().compat.vrCompat().UnitsPerMeter;
+			}
+			WRITE(p, "  viewPos.x += %f * float(gl_ViewIndex * 2 - 1);\n", scale * ipd * 0.5);
 		}
-
-		WRITE(p, "  vec4 viewPos = vec4(mul(vec4(worldpos, 1.0), u_view%s).xyz, 1.0);\n", matrixPostfix.c_str());
 
 		// Final view and projection transforms.
 		if (gstate_c.Use(GPU_ROUND_DEPTH_TO_16BIT)) {
 			if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
-				WRITE(p, "  vec4 outPos = depthRoundZVP(mul(u_proj_lens%s, viewPos));\n", matrixPostfix.c_str());
+				WRITE(p, "  vec4 outPos = depthRoundZVP(mul(u_proj_lens, viewPos));\n");
 				WRITE(p, "  vec4 orgPos = depthRoundZVP(mul(u_proj, viewPos));\n");
 			} else {
 				WRITE(p, "  vec4 outPos = depthRoundZVP(mul(u_proj, viewPos));\n");
 			}
 		} else {
 			if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
-				WRITE(p, "  vec4 outPos = mul(u_proj_lens%s, viewPos);\n", matrixPostfix.c_str());
+				WRITE(p, "  vec4 outPos = mul(u_proj_lens, viewPos);\n");
 				WRITE(p, "  vec4 orgPos = mul(u_proj, viewPos);\n");
 			} else {
 				WRITE(p, "  vec4 outPos = mul(u_proj, viewPos);\n");
@@ -972,6 +966,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		bool distanceNeeded = false;
 		bool anySpots = false;
 		if (enableLighting) {
+
 			p.C("  lowp vec4 lightSum0 = u_ambient * ambientColor + vec4(u_matemissive, 0.0);\n");
 
 			for (int i = 0; i < 4; i++) {
@@ -1012,6 +1007,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			}
 		}
 
+		// NOTE: Can't change this without updating uniform buffer declarations (for D3D11 and VK, the one in ShaderUniforms.h).
 		bool useIndexing = compat.shaderLanguage == HLSL_D3D11 || compat.shaderLanguage == GLSL_VULKAN;
 
 		char iStr[4];
@@ -1062,16 +1058,14 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 				p.C("      ldot = u_matspecular.a > 0.0 ? pow(max(ldot, 0.0), u_matspecular.a) : 1.0;\n");
 				p.C("    }\n");
 				p.F("    diffuse = (u_lightdiffuse%s * diffuseColor) * max(ldot, 0.0);\n", iStr);
-				p.C("    if (comp == 0x1u) {\n");  // do specular
-				p.C("      if (ldot >= 0.0) {\n");
-				p.C("        if (u_matspecular.a > 0.0) {\n");
-				p.C("          ldot = dot(normalize(toLight + vec3(0.0, 0.0, 1.0)), worldnormal);\n");
-				p.C("          ldot = pow(max(ldot, 0.0), u_matspecular.a);\n");
-				p.C("        } else {\n");
-				p.C("          ldot = 1.0;\n");
-				p.C("        }\n");
-				p.F("        lightSum1 += u_lightspecular%s * specularColor * ldot * lightScale;\n", iStr);
+				p.C("    if (comp == 0x1u && ldot >= 0.0) {\n");  // do specular. note - must allow for the >= case, since the u_matspecular.a <= 0.0 case relies on it.
+				p.C("      if (u_matspecular.a > 0.0) {\n");
+				p.C("        ldot = dot(normalize(toLight + vec3(0.0, 0.0, 1.0)), worldnormal);\n");
+				p.C("        ldot = pow(max(ldot, 0.0), u_matspecular.a);\n");
+				p.C("      } else {\n");
+				p.C("        ldot = 1.0;\n");
 				p.C("      }\n");
+				p.F("      lightSum1 += u_lightspecular%s * specularColor * ldot * lightScale;\n", iStr);
 				p.C("    }\n");
 				p.F("    lightSum0.rgb += (u_lightambient%s * ambientColor.rgb + diffuse) * lightScale;\n", iStr);
 				p.C("  }\n");
@@ -1127,7 +1121,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 				case GE_LIGHTTYPE_UNKNOWN:
 					p.F("  angle = dot(u_lightdir%s, toLight);\n", iStr, iStr);
 					p.F("  if (angle >= u_lightangle_spotCoef%s.x) {\n", iStr);
-					p.F("    lightScale = clamp(1.0 / dot(u_lightatt%s, vec3(1.0, distance, distance*distance)), 0.0, 1.0) * (u_lightangle_spotCoef%s.y <= 0.0 ? 1.0 : pow(angle, u_lightangle_spotCoef%s.y));\n", iStr, iStr, iStr);
+					p.F("    lightScale = clamp(1.0 / dot(u_lightatt%s, vec3(1.0, distance, distance*distance)), 0.0, 1.0) * (u_lightangle_spotCoef%s.y <= 0.0 ? 1.0 : pow(max(angle, 0.0), u_lightangle_spotCoef%s.y));\n", iStr, iStr, iStr);
 					p.C("  } else {\n");
 					p.C("    lightScale = 0.0;\n");
 					p.C("  }\n");
@@ -1155,29 +1149,20 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		}
 
 		if (enableLighting) {
-			WRITE(p, "  lightSum0 = clamp(lightSum0, 0.0, 1.0);\n");
-			if (specularIsZero) {
-				WRITE(p, "  %sv_color0 = lightSum0;\n", compat.vsOutPrefix);
-				WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
-			} else {
-				if (lightUberShader) {
-					p.C("  bool lmode = (u_lightControl & (0x1u << 0x17u)) != 0x0u;\n");
-					p.C("  if (lmode) {\n");
-					p.F("    %sv_color0 = lightSum0;\n", compat.vsOutPrefix);
-					p.F("    %sv_color1 = clamp(lightSum1, 0.0, 1.0);\n", compat.vsOutPrefix);
-					p.C("  } else {\n");
-					p.F("    %sv_color0 = clamp(lightSum0 + vec4(lightSum1, 0.0), 0.0, 1.0);\n", compat.vsOutPrefix);
-					p.F("    %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
-					p.C("  }");
+			// Sum up ambient, emissive here.
+			if (lmode) {
+				WRITE(p, "  %sv_color0 = clamp(lightSum0, 0.0, 1.0);\n", compat.vsOutPrefix);
+				// v_color1 only exists when lmode = 1.
+				if (specularIsZero) {
+					WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
 				} else {
-					if (lmode) {
-						WRITE(p, "  %sv_color0 = lightSum0;\n", compat.vsOutPrefix);
-						// v_color1 only exists when lmode = 1.
-						WRITE(p, "  %sv_color1 = clamp(lightSum1, 0.0, 1.0);\n", compat.vsOutPrefix);
-					} else {
-						WRITE(p, "  %sv_color0 = clamp(lightSum0 + vec4(lightSum1, 0.0), 0.0, 1.0);\n", compat.vsOutPrefix);
-						WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
-					}
+					WRITE(p, "  %sv_color1 = clamp(lightSum1, 0.0, 1.0);\n", compat.vsOutPrefix);
+				}
+			} else {
+				if (specularIsZero) {
+					WRITE(p, "  %sv_color0 = clamp(lightSum0, 0.0, 1.0);\n", compat.vsOutPrefix);
+				} else {
+					WRITE(p, "  %sv_color0 = clamp(clamp(lightSum0, 0.0, 1.0) + vec4(lightSum1, 0.0), 0.0, 1.0);\n", compat.vsOutPrefix);
 				}
 			}
 		} else {
@@ -1193,7 +1178,9 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 					WRITE(p, "  %sv_color0.r += 0.000001;\n", compat.vsOutPrefix);
 				}
 			}
-			WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
+			if (lmode) {
+				WRITE(p, "  %sv_color1 = splat3(0.0);\n", compat.vsOutPrefix);
+			}
 		}
 
 		bool scaleUV = !isModeThrough && (uvGenMode == GE_TEXMAP_TEXTURE_COORDS || uvGenMode == GE_TEXMAP_UNKNOWN);
@@ -1292,14 +1279,8 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			}
 		}
 
-		// Compute fogdepth.  [branch] works around an apparent d3d9 shader compiler bug.
-		if (compat.shaderLanguage == HLSL_D3D9)
-			WRITE(p, "  [branch]\n");
-		WRITE(p, "  if (u_fogcoef.x <= -65535.0 && u_fogcoef.y <= -65535.0) {\n");
-		WRITE(p, "    %sv_fogdepth = 1.0;\n", compat.vsOutPrefix);
-		WRITE(p, "  } else {\n");
-		WRITE(p, "    %sv_fogdepth = (viewPos.z + u_fogcoef.x) * u_fogcoef.y;\n", compat.vsOutPrefix);
-		WRITE(p, "  }\n");
+		// Compute fogdepth
+		WRITE(p, "  %sv_fogdepth = (viewPos.z + u_fogcoef.x) * u_fogcoef.y;\n", compat.vsOutPrefix);
 	}
 
 	if (clipClampedDepth) {
@@ -1321,7 +1302,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		WRITE(p, "  }\n");
 	}
 
-	if (vertexRangeCulling && !gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
+	if (vertexRangeCulling) {
 		WRITE(p, "  vec3 projPos = outPos.xyz / outPos.w;\n");
 		WRITE(p, "  float projZ = (projPos.z - u_depthRange.z) * u_depthRange.w;\n");
 
@@ -1350,7 +1331,8 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		}
 		if (gstate_c.Use(GPU_USE_CULL_DISTANCE)) {
 			// Cull any triangle fully outside in the same direction when depth clamp enabled.
-			WRITE(p, "  if (u_cullRangeMin.w > 0.0) {\n");
+			// We check u_depthRange in case depthScale was zero - in that case we can't work out the cull distance.
+			WRITE(p, "  if (u_cullRangeMin.w > 0.0 && u_depthRange.w != 0.0f) {\n");
 			WRITE(p, "    %sgl_CullDistance%s = projPos.z - u_cullRangeMin.z;\n", compat.vsOutPrefix, cull0);
 			WRITE(p, "    %sgl_CullDistance%s = u_cullRangeMax.z - projPos.z;\n", compat.vsOutPrefix, cull1);
 			WRITE(p, "  } else {\n");
@@ -1372,12 +1354,6 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		// HUD scaling
 		WRITE(p, "  %sgl_Position.x *= u_scaleX;\n", compat.vsOutPrefix);
 		WRITE(p, "  %sgl_Position.y *= u_scaleY;\n", compat.vsOutPrefix);
-	}
-
-	if (useSimpleStereo && useHWTransform) {
-		p.C("  float zFactor = 0.2 * float(gl_ViewIndex * 2 - 1);\n");
-		p.C("  float zFocus = 0.0;\n");
-		p.C("  gl_Position.x += (-gl_Position.z - zFocus) * zFactor;\n");
 	}
 
 	if (needsZWHack) {

@@ -7,6 +7,7 @@
 
 #include "ppsspp_config.h"
 #include "Core/Config.h"
+#include "Common/Log.h"
 #include "DarwinFileSystemServices.h"
 #include <dispatch/dispatch.h>
 #include <CoreServices/CoreServices.h>
@@ -16,24 +17,45 @@
 #endif
 
 #if __has_include(<UIKit/UIKit.h>)
+#include "../ios/ViewControllerCommon.h"
 #include <UIKit/UIKit.h>
 
 @interface DocumentPickerDelegate : NSObject <UIDocumentPickerDelegate>
-@property DarwinDirectoryPanelCallback callback;
+@property DarwinDirectoryPanelCallback panelCallback;
 @end
 
+void *DarwinFileSystemServices::__pickerDelegate = nullptr;
+
+void DarwinFileSystemServices::ClearDelegate() {
+	// TODO: Figure out how to free the delegate.
+	// CFRelease((__bridge DocumentPickerDelegate *)__pickerDelegate);
+	__pickerDelegate = NULL;
+}
+
 @implementation DocumentPickerDelegate
--(instancetype)initWithCallback: (DarwinDirectoryPanelCallback)callback {
-    if (self = [super init]) {
-        self.callback = callback;
-    }
-    
-    return self;
+-(instancetype)initWithCallback: (DarwinDirectoryPanelCallback)panelCallback {
+	if (self = [super init]) {
+		self.panelCallback = panelCallback;
+	}
+	return self;
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    if (urls.count >= 1)
-		self.callback(Path(urls[0].path.UTF8String));
+	if (urls.count >= 1)
+		self.panelCallback(true, Path(urls[0].path.UTF8String));
+	else
+		self.panelCallback(false, Path());
+
+	INFO_LOG(Log::System, "Callback processed, pre-emptively hide keyboard");
+	[sharedViewController hideKeyboard];
+	DarwinFileSystemServices::ClearDelegate();
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+	self.panelCallback(false, Path());
+
+	INFO_LOG(Log::System, "Picker cancelled, pre-emptively hide keyboard");
+	[sharedViewController hideKeyboard];
 }
 
 @end
@@ -42,21 +64,48 @@
 #include <AppKit/AppKit.h>
 #endif // __has_include(<UIKit/UIKit.h>)
 
-void DarwinFileSystemServices::presentDirectoryPanel(DarwinDirectoryPanelCallback callback,
-													 bool allowFiles,
-													 bool allowDirectories) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+void DarwinFileSystemServices::presentDirectoryPanel(
+	DarwinDirectoryPanelCallback panelCallback,
+	bool allowFiles, bool allowDirectories,
+	BrowseFileType fileType) {
+	dispatch_async(dispatch_get_main_queue(), ^{
 #if PPSSPP_PLATFORM(MAC)
-        NSOpenPanel *panel = [[NSOpenPanel alloc] init];
-        panel.allowsMultipleSelection = NO;
-        panel.canChooseFiles = allowFiles;
-        panel.canChooseDirectories = allowDirectories;
+		NSOpenPanel *panel = [[NSOpenPanel alloc] init];
+		panel.allowsMultipleSelection = NO;
+		panel.canChooseFiles = allowFiles;
+		panel.canChooseDirectories = allowDirectories;
+		switch (fileType) {
+		case BrowseFileType::BOOTABLE:
+			[panel setAllowedFileTypes:[NSArray arrayWithObjects:@"iso", @"cso", @"pbp", @"elf", @"zip", @"ppdmp", nil]];
+			break;
+		case BrowseFileType::IMAGE:
+			[panel setAllowedFileTypes:[NSArray arrayWithObjects:@"jpg", @"png", nil]];
+			break;
+		case BrowseFileType::INI:
+			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"ini"]];
+			break;
+		case BrowseFileType::DB:
+			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"db"]];
+			break;
+		case BrowseFileType::SOUND_EFFECT:
+			[panel setAllowedFileTypes:[NSArray arrayWithObject:@"wav"]];
+			break;
+		default:
+			break;
+		}
 //		if (!allowFiles && allowDirectories)
 //			panel.allowedFileTypes = @[(__bridge NSString *)kUTTypeFolder];
-        
-        NSModalResponse modalResponse = [panel runModal];
-        if (modalResponse == NSModalResponseOK && panel.URLs.firstObject)
-            callback(Path(panel.URLs.firstObject.path.UTF8String));
+		NSModalResponse modalResponse = [panel runModal];
+		if (modalResponse == NSModalResponseOK && panel.URLs.firstObject) {
+			INFO_LOG(Log::System, "Mac: Received OK response from modal");
+			panelCallback(true, Path(panel.URLs.firstObject.path.UTF8String));
+		} else if (modalResponse == NSModalResponseCancel) {
+			INFO_LOG(Log::System, "Mac: Received Cancel response from modal");
+			panelCallback(false, Path());
+		} else {
+			WARN_LOG(Log::System, "Mac: Received unknown responsde from modal");
+			panelCallback(false, Path());
+		}
 #elif PPSSPP_PLATFORM(IOS)
 		UIViewController *rootViewController = UIApplication.sharedApplication
 			.keyWindow
@@ -79,7 +128,7 @@ void DarwinFileSystemServices::presentDirectoryPanel(DarwinDirectoryPanelCallbac
 		UIDocumentPickerViewController *pickerVC = [[UIDocumentPickerViewController alloc] initWithDocumentTypes: types inMode: pickerMode];
 		// What if you wanted to go to heaven, but then God showed you the next few lines?
 		// serious note: have to do this, because __pickerDelegate has to stay retained as a class property
-		__pickerDelegate = (void *)CFBridgingRetain([[DocumentPickerDelegate alloc] initWithCallback:callback]);
+		__pickerDelegate = (void *)CFBridgingRetain([[DocumentPickerDelegate alloc] initWithCallback:panelCallback]);
 		pickerVC.delegate = (__bridge DocumentPickerDelegate *)__pickerDelegate;
 		[rootViewController presentViewController:pickerVC animated:true completion:nil];
 #endif
@@ -91,10 +140,10 @@ Path DarwinFileSystemServices::appropriateMemoryStickDirectoryToUse() {
     if (userPreferred)
         return Path(userPreferred.UTF8String);
     
-    return __defaultMemoryStickPath();
+    return defaultMemoryStickPath();
 }
 
-Path DarwinFileSystemServices::__defaultMemoryStickPath() {
+Path DarwinFileSystemServices::defaultMemoryStickPath() {
 #if PPSSPP_PLATFORM(IOS)
     NSString *documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)
                                objectAtIndex:0];
@@ -108,4 +157,15 @@ void DarwinFileSystemServices::setUserPreferredMemoryStickDirectory(Path path) {
     [[NSUserDefaults standardUserDefaults] setObject:@(path.c_str())
                                               forKey:@(PreferredMemoryStickUserDefaultsKey)];
     g_Config.memStickDirectory = path;
+}
+
+void RestartMacApp() {
+#if PPSSPP_PLATFORM(MAC)
+    NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:@"/usr/bin/open"];
+    task.arguments = @[@"-n", bundleURL.path];
+    [task launch];
+    exit(0);
+#endif
 }

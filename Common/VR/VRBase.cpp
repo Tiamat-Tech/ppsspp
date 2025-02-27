@@ -40,19 +40,18 @@ void VR_Init( void* system, const char* name, int version ) {
 #endif
 
 	std::vector<const char *> extensions;
-	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
-		extensions.push_back(XR_KHR_VULKAN_ENABLE_EXTENSION_NAME);
-	} else {
 #ifdef XR_USE_GRAPHICS_API_OPENGL_ES
-		extensions.push_back(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME);
+	extensions.push_back(XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME);
 #endif
-	}
 	extensions.push_back(XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME);
 #ifdef ANDROID
-	if (VR_GetPlatformFlag(VR_PLATFORM_INSTANCE_EXT)) {
+	if (VR_GetPlatformFlag(VR_PLATFORM_EXTENSION_INSTANCE)) {
 		extensions.push_back(XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME);
 	}
-	if (VR_GetPlatformFlag(VR_PLATFORM_PERFORMANCE_EXT)) {
+	if (VR_GetPlatformFlag(VR_PLATFORM_EXTENSION_PASSTHROUGH)) {
+		extensions.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+	}
+	if (VR_GetPlatformFlag(VR_PLATFORM_EXTENSION_PERFORMANCE)) {
 		extensions.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
 		extensions.push_back(XR_KHR_ANDROID_THREAD_SETTINGS_EXTENSION_NAME);
 	}
@@ -65,7 +64,7 @@ void VR_Init( void* system, const char* name, int version ) {
 	strcpy(appInfo.engineName, name);
 	appInfo.applicationVersion = version;
 	appInfo.engineVersion = version;
-	appInfo.apiVersion = XR_CURRENT_API_VERSION;
+	appInfo.apiVersion = XR_API_VERSION_1_0;
 
 	XrInstanceCreateInfo instanceCreateInfo;
 	memset(&instanceCreateInfo, 0, sizeof(instanceCreateInfo));
@@ -80,7 +79,7 @@ void VR_Init( void* system, const char* name, int version ) {
 
 #ifdef ANDROID
 	XrInstanceCreateInfoAndroidKHR instanceCreateInfoAndroid = {XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
-	if (VR_GetPlatformFlag(VR_PLATFORM_INSTANCE_EXT)) {
+	if (VR_GetPlatformFlag(VR_PLATFORM_EXTENSION_INSTANCE)) {
 		ovrJava* java = (ovrJava*)system;
 		instanceCreateInfoAndroid.applicationVM = java->Vm;
 		instanceCreateInfoAndroid.applicationActivity = java->ActivityObject;
@@ -122,29 +121,17 @@ void VR_Init( void* system, const char* name, int version ) {
 	}
 
 	// Get the graphics requirements.
-	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
-		PFN_xrGetVulkanGraphicsRequirementsKHR pfnGetVulkanGraphicsRequirementsKHR = NULL;
-		OXR(xrGetInstanceProcAddr(
-				vr_engine.appState.Instance,
-				"xrGetVulkanGraphicsRequirementsKHR",
-				(PFN_xrVoidFunction*)(&pfnGetVulkanGraphicsRequirementsKHR)));
-
-		XrGraphicsRequirementsVulkanKHR graphicsRequirements = {};
-		graphicsRequirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN_KHR;
-		OXR(pfnGetVulkanGraphicsRequirementsKHR(vr_engine.appState.Instance, systemId, &graphicsRequirements));
-	} else {
 #ifdef XR_USE_GRAPHICS_API_OPENGL_ES
-		PFN_xrGetOpenGLESGraphicsRequirementsKHR pfnGetOpenGLESGraphicsRequirementsKHR = NULL;
-		OXR(xrGetInstanceProcAddr(
-				vr_engine.appState.Instance,
-				"xrGetOpenGLESGraphicsRequirementsKHR",
-				(PFN_xrVoidFunction*)(&pfnGetOpenGLESGraphicsRequirementsKHR)));
+	PFN_xrGetOpenGLESGraphicsRequirementsKHR pfnGetOpenGLESGraphicsRequirementsKHR = NULL;
+	OXR(xrGetInstanceProcAddr(
+			vr_engine.appState.Instance,
+			"xrGetOpenGLESGraphicsRequirementsKHR",
+			(PFN_xrVoidFunction*)(&pfnGetOpenGLESGraphicsRequirementsKHR)));
 
-		XrGraphicsRequirementsOpenGLESKHR graphicsRequirements = {};
-		graphicsRequirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR;
-		OXR(pfnGetOpenGLESGraphicsRequirementsKHR(vr_engine.appState.Instance, systemId, &graphicsRequirements));
+	XrGraphicsRequirementsOpenGLESKHR graphicsRequirements = {};
+	graphicsRequirements.type = XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR;
+	OXR(pfnGetOpenGLESGraphicsRequirementsKHR(vr_engine.appState.Instance, systemId, &graphicsRequirements));
 #endif
-	}
 
 #ifdef ANDROID
 	vr_engine.appState.MainThreadTid = gettid();
@@ -160,7 +147,7 @@ void VR_Destroy( engine_t* engine ) {
 	}
 }
 
-void VR_EnterVR( engine_t* engine, XrGraphicsBindingVulkanKHR* graphicsBindingVulkan ) {
+void VR_EnterVR( engine_t* engine ) {
 
 	if (engine->appState.Session) {
 		ALOGE("VR_EnterVR called with existing session");
@@ -175,20 +162,16 @@ void VR_EnterVR( engine_t* engine, XrGraphicsBindingVulkanKHR* graphicsBindingVu
 	XrGraphicsBindingOpenGLWin32KHR graphicsBindingGL = {};
 #endif
 	memset(&sessionCreateInfo, 0, sizeof(sessionCreateInfo));
-	if (VR_GetPlatformFlag(VR_PLATFORM_RENDERER_VULKAN)) {
-		sessionCreateInfo.next = graphicsBindingVulkan;
-	} else {
 #ifdef ANDROID
-		graphicsBindingGL.type = XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR;
-		graphicsBindingGL.next = NULL;
-		graphicsBindingGL.display = eglGetCurrentDisplay();
-		graphicsBindingGL.config = eglGetCurrentSurface(EGL_DRAW);
-		graphicsBindingGL.context = eglGetCurrentContext();
-		sessionCreateInfo.next = &graphicsBindingGL;
+	graphicsBindingGL.type = XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR;
+	graphicsBindingGL.next = NULL;
+	graphicsBindingGL.display = eglGetCurrentDisplay();
+	graphicsBindingGL.config = NULL;
+	graphicsBindingGL.context = eglGetCurrentContext();
+	sessionCreateInfo.next = &graphicsBindingGL;
 #else
-		//TODO:PCVR definition
+	//TODO:PCVR definition
 #endif
-	}
 	sessionCreateInfo.type = XR_TYPE_SESSION_CREATE_INFO;
 	sessionCreateInfo.createFlags = 0;
 	sessionCreateInfo.systemId = engine->appState.SystemId;

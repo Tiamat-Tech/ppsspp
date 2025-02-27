@@ -25,10 +25,13 @@
 #include "Common/UI/UIScreen.h"
 #include "Core/ConfigValues.h"
 #include "UI/MiscScreens.h"
+#include "UI/TabbedDialogScreen.h"
+
+class Path;
 
 // Per-game settings screen - enables you to configure graphic options, control options, etc
 // per game.
-class GameSettingsScreen : public UIDialogScreenWithGameBackground {
+class GameSettingsScreen : public TabbedUIDialogScreenWithGameBackground {
 public:
 	GameSettingsScreen(const Path &gamePath, std::string gameID = "", bool editThenRestore = false);
 
@@ -36,17 +39,16 @@ public:
 	const char *tag() const override { return "GameSettings"; }
 
 protected:
-	void sendMessage(const char *message, const char *value) override;
-	void CreateViews() override;
 	void CallbackRestoreDefaults(bool yes);
-	void CallbackRenderingBackend(bool yes);
-	void CallbackRenderingDevice(bool yes);
-	void CallbackInflightFrames(bool yes);
 	void CallbackMemstickFolder(bool yes);
 	void dialogFinished(const Screen *dialog, DialogResult result) override;
-	void RecreateViews() override;
+
+	void CreateTabs() override;
+	bool ShowSearchControls() const override { return true; }
 
 private:
+	void PreCreateViews() override;
+
 	void CreateGraphicsSettings(UI::ViewGroup *graphicsSettings);
 	void CreateControlsSettings(UI::ViewGroup *tools);
 	void CreateAudioSettings(UI::ViewGroup *audioSettings);
@@ -55,10 +57,6 @@ private:
 	void CreateSystemSettings(UI::ViewGroup *systemSettings);
 	void CreateVRSettings(UI::ViewGroup *vrSettings);
 
-	UI::LinearLayout *AddTab(const char *tag, const std::string &title, bool isSearch = false);
-	void ApplySearchFilter();
-	void TriggerRestart(const char *why);
-
 	std::string gameID_;
 	UI::CheckBox *enableReportsCheckbox_ = nullptr;
 	UI::Choice *layoutEditorChoice_ = nullptr;
@@ -66,9 +64,6 @@ private:
 	UI::Choice *backgroundChoice_ = nullptr;
 	UI::PopupMultiChoice *resolutionChoice_ = nullptr;
 	UI::CheckBox *frameSkipAuto_ = nullptr;
-	SettingInfoMessage *settingInfo_ = nullptr;
-	UI::Choice *clearSearchChoice_ = nullptr;
-	UI::TextView *noSearchResults_ = nullptr;
 #ifdef _WIN32
 	UI::CheckBox *SavePathInMyDocumentChoice = nullptr;
 	UI::CheckBox *SavePathInOtherChoice = nullptr;
@@ -79,37 +74,27 @@ private:
 
 	std::string memstickDisplay_;
 
-	UI::TabHolder *tabHolder_ = nullptr;
-	std::vector<UI::LinearLayout *> settingTabContents_;
-	std::vector<UI::TextView *> settingTabFilterNotices_;
-
 	// Event handlers
 	UI::EventReturn OnControlMapping(UI::EventParams &e);
 	UI::EventReturn OnCalibrateAnalogs(UI::EventParams &e);
 	UI::EventReturn OnTouchControlLayout(UI::EventParams &e);
-	UI::EventReturn OnTiltTypeChange(UI::EventParams &e);
 	UI::EventReturn OnTiltCustomize(UI::EventParams &e);
 
 	// Global settings handlers
 	UI::EventReturn OnAutoFrameskip(UI::EventParams &e);
 	UI::EventReturn OnTextureShader(UI::EventParams &e);
 	UI::EventReturn OnTextureShaderChange(UI::EventParams &e);
-	UI::EventReturn OnDeveloperTools(UI::EventParams &e);
-	UI::EventReturn OnRemoteISO(UI::EventParams &e);
 	UI::EventReturn OnChangeQuickChat0(UI::EventParams &e);
 	UI::EventReturn OnChangeQuickChat1(UI::EventParams &e);
 	UI::EventReturn OnChangeQuickChat2(UI::EventParams &e);
 	UI::EventReturn OnChangeQuickChat3(UI::EventParams &e);
 	UI::EventReturn OnChangeQuickChat4(UI::EventParams &e);
-	UI::EventReturn OnChangeNickname(UI::EventParams &e);
 	UI::EventReturn OnChangeproAdhocServerAddress(UI::EventParams &e);
-	UI::EventReturn OnChangeMacAddress(UI::EventParams &e);
 	UI::EventReturn OnChangeBackground(UI::EventParams &e);
 	UI::EventReturn OnFullscreenChange(UI::EventParams &e);
 	UI::EventReturn OnFullscreenMultiChange(UI::EventParams &e);
 	UI::EventReturn OnResolutionChange(UI::EventParams &e);
 	UI::EventReturn OnRestoreDefaultSettings(UI::EventParams &e);
-	UI::EventReturn OnRenderingMode(UI::EventParams &e);
 	UI::EventReturn OnRenderingBackend(UI::EventParams &e);
 	UI::EventReturn OnRenderingDevice(UI::EventParams &e);
 	UI::EventReturn OnInflightFramesChoice(UI::EventParams &e);
@@ -117,22 +102,16 @@ private:
 	UI::EventReturn OnMicDeviceChange(UI::EventParams& e);
 	UI::EventReturn OnAudioDevice(UI::EventParams &e);
 	UI::EventReturn OnJitAffectingSetting(UI::EventParams &e);
-	UI::EventReturn OnChangeMemStickDir(UI::EventParams &e);
-	UI::EventReturn OnOpenMemStick(UI::EventParams &e);
+	UI::EventReturn OnShowMemstickScreen(UI::EventParams &e);
 #if defined(_WIN32) && !PPSSPP_PLATFORM(UWP)
-	UI::EventReturn OnSavePathMydoc(UI::EventParams &e);
-	UI::EventReturn OnSavePathOther(UI::EventParams &e);
+	UI::EventReturn OnMemoryStickMyDoc(UI::EventParams &e);
+	UI::EventReturn OnMemoryStickOther(UI::EventParams &e);
 #endif
 	UI::EventReturn OnScreenRotation(UI::EventParams &e);
 	UI::EventReturn OnImmersiveModeChange(UI::EventParams &e);
 	UI::EventReturn OnSustainedPerformanceModeChange(UI::EventParams &e);
 
 	UI::EventReturn OnAdhocGuides(UI::EventParams &e);
-
-	UI::EventReturn OnSavedataManager(UI::EventParams &e);
-	UI::EventReturn OnSysInfo(UI::EventParams &e);
-	UI::EventReturn OnChangeSearchFilter(UI::EventParams &e);
-	UI::EventReturn OnClearSearchFilter(UI::EventParams &e);
 
 	// Temporaries to convert setting types, cache enabled, etc.
 	int iAlternateSpeedPercent1_ = 0;
@@ -143,16 +122,11 @@ private:
 	bool enableReportsSet_ = false;
 	bool analogSpeedMapped_ = false;
 
-	std::string searchFilter_;
-
 	// edit the game-specific settings and restore the global settings after exiting
 	bool editThenRestore_ = false;
 
 	// Android-only
 	std::string pendingMemstickFolder_;
-
-	// If we recreate the views while this is active we show it again
-	std::string oldSettingInfo_;
 };
 
 class DeveloperToolsScreen : public UIDialogScreenWithGameBackground {
@@ -175,8 +149,14 @@ private:
 	UI::EventReturn OnJitAffectingSetting(UI::EventParams &e);
 	UI::EventReturn OnJitDebugTools(UI::EventParams &e);
 	UI::EventReturn OnRemoteDebugger(UI::EventParams &e);
+	UI::EventReturn OnMIPSTracerEnabled(UI::EventParams &e);
+	UI::EventReturn OnMIPSTracerPathChanged(UI::EventParams &e);
+	UI::EventReturn OnMIPSTracerFlushTrace(UI::EventParams &e);
+	UI::EventReturn OnMIPSTracerClearJitCache(UI::EventParams &e);
+	UI::EventReturn OnMIPSTracerClearTracer(UI::EventParams &e);
 	UI::EventReturn OnGPUDriverTest(UI::EventParams &e);
 	UI::EventReturn OnFramedumpTest(UI::EventParams &e);
+	UI::EventReturn OnMemstickTest(UI::EventParams &e);
 	UI::EventReturn OnTouchscreenTest(UI::EventParams &e);
 	UI::EventReturn OnCopyStatesToRoot(UI::EventParams &e);
 
@@ -188,19 +168,26 @@ private:
 		MAYBE,
 	};
 	HasIni hasTexturesIni_ = HasIni::MAYBE;
+
+	bool MIPSTracerEnabled_ = false;
+	std::string MIPSTracerPath_ = "";
+	UI::InfoItem* MIPSTracerPath = nullptr;
 };
 
 class HostnameSelectScreen : public PopupScreen {
 public:
-	HostnameSelectScreen(std::string *value, const std::string &title)
+	HostnameSelectScreen(std::string *value, std::string_view title)
 		: PopupScreen(title, "OK", "Cancel"), value_(value) {
 		resolver_ = std::thread([](HostnameSelectScreen *thiz) {
 			thiz->ResolverThread();
 		}, this);
 	}
 	~HostnameSelectScreen() {
-		resolverState_ = ResolverState::QUIT;
-		resolverCond_.notify_one();
+		{
+			std::unique_lock<std::mutex> guard(resolverLock_);
+			resolverState_ = ResolverState::QUIT;
+			resolverCond_.notify_one();
+		}
 		resolver_.join();
 	}
 
@@ -214,7 +201,7 @@ protected:
 
 private:
 	void ResolverThread();
-	void SendEditKey(int keyCode, int flags = 0);
+	void SendEditKey(InputKeyCode keyCode, int flags = 0);
 
 	UI::EventReturn OnNumberClick(UI::EventParams &e);
 	UI::EventReturn OnPointClick(UI::EventParams &e);
@@ -258,7 +245,7 @@ public:
 
 class RestoreSettingsScreen : public PopupScreen {
 public:
-	RestoreSettingsScreen(const char *title);
+	RestoreSettingsScreen(std::string_view title);
 	void CreatePopupContents(UI::ViewGroup *parent) override;
 
 	const char *tag() const override { return "RestoreSettingsScreen"; }
@@ -266,3 +253,5 @@ private:
 	void OnCompleted(DialogResult result) override;
 	int restoreFlags_ = (int)(RestoreSettingsBits::SETTINGS);  // RestoreSettingsBits enum
 };
+
+void TriggerRestart(const char *why, bool editThenRestore, const Path &gamePath);

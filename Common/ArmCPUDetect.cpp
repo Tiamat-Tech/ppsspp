@@ -29,17 +29,18 @@
 #if PPSSPP_ARCH(ARM)
 #include "ext/cpu_features/include/cpuinfo_arm.h"
 
-#if defined(CPU_FEATURES_OS_LINUX) || defined(CPU_FEATURES_OS_ANDROID)
+#if defined(CPU_FEATURES_OS_LINUX)
 #define USE_CPU_FEATURES 1
 #endif
-#elif PPSSPP_ARCH(ARM64) && defined(__aarch64__)
+#elif PPSSPP_ARCH(ARM64)
 #include "ext/cpu_features/include/cpuinfo_aarch64.h"
 
-#if defined(CPU_FEATURES_OS_LINUX) || defined(CPU_FEATURES_OS_ANDROID)
+#if defined(CPU_FEATURES_OS_LINUX) || defined(CPU_FEATURES_OS_ANDROID) || defined(CPU_FEATURES_OS_WINDOWS)
 #define USE_CPU_FEATURES 1
 #endif
 #endif
 
+#include <cstring>
 #include <ctype.h>
 
 #include "Common/CommonTypes.h"
@@ -54,7 +55,7 @@
 std::string GetCPUBrandString();
 #else
 // No CPUID on ARM, so we'll have to read the registry
-#include <windows.h>
+#include "Common/CommonWindows.h"
 std::string GetCPUBrandString() {
 	std::string cpu_string;
 	
@@ -89,7 +90,7 @@ const char syscpupresentfile[] = "/sys/devices/system/cpu/present";
 
 std::string GetCPUString() {
 	std::string procdata;
-	bool readSuccess = File::ReadFileToString(true, Path(procfile), procdata);
+	bool readSuccess = File::ReadSysTextFileToString(Path(procfile), &procdata);
 	std::istringstream file(procdata);
 	std::string cpu_string;
 
@@ -112,7 +113,7 @@ std::string GetCPUString() {
 
 std::string GetCPUBrandString() {
 	std::string procdata;
-	bool readSuccess = File::ReadFileToString(true, Path(procfile), procdata);
+	bool readSuccess = File::ReadSysTextFileToString(Path(procfile), &procdata);
 	std::istringstream file(procdata);
 	std::string brand_string;
 
@@ -142,7 +143,7 @@ unsigned char GetCPUImplementer()
 	unsigned char implementer = 0;
 
 	std::string procdata;
-	if (!File::ReadFileToString(true, Path(procfile), procdata))
+	if (!File::ReadSysTextFileToString(Path(procfile), &procdata))
 		return 0;
 	std::istringstream file(procdata);
 
@@ -165,7 +166,7 @@ unsigned short GetCPUPart()
 	unsigned short part = 0;
 
 	std::string procdata;
-	if (!File::ReadFileToString(true, Path(procfile), procdata))
+	if (!File::ReadSysTextFileToString(Path(procfile), &procdata))
 		return 0;
 	std::istringstream file(procdata);
 
@@ -187,7 +188,7 @@ bool CheckCPUFeature(const std::string& feature)
 	std::string line, marker = "Features\t: ";
 
 	std::string procdata;
-	if (!File::ReadFileToString(true, Path(procfile), procdata))
+	if (!File::ReadSysTextFileToString(Path(procfile), &procdata))
 		return false;
 	std::istringstream file(procdata);
 	while (std::getline(file, line))
@@ -213,7 +214,7 @@ int GetCoreCount()
 	int cores = 1;
 
 	std::string presentData;
-	bool presentSuccess = File::ReadFileToString(true, Path(syscpupresentfile), presentData);
+	bool presentSuccess = File::ReadSysTextFileToString(Path(syscpupresentfile), &presentData);
 	std::istringstream presentFile(presentData);
 
 	if (presentSuccess) {
@@ -227,7 +228,7 @@ int GetCoreCount()
 	}
 
 	std::string procdata;
-	if (!File::ReadFileToString(true, Path(procfile), procdata))
+	if (!File::ReadSysTextFileToString(Path(procfile), &procdata))
 		return 1;
 	std::istringstream file(procdata);
 	

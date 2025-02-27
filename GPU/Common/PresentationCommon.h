@@ -39,7 +39,6 @@ struct PostShaderUniforms {
 	float gl_HalfPixel[4];
 };
 
-// Could use UI::Bounds but don't want to depend on that here.
 struct FRect {
 	float x;
 	float y;
@@ -48,7 +47,7 @@ struct FRect {
 };
 
 FRect GetScreenFrame(float pixelWidth, float pixelHeight);
-void CenterDisplayOutputRect(FRect *rc, float origW, float origH, const FRect &frame, int rotation);
+void CalculateDisplayOutputRect(FRect *rc, float origW, float origH, const FRect &frame, int rotation);
 
 namespace Draw {
 class Buffer;
@@ -67,9 +66,9 @@ enum class OutputFlags {
 	LINEAR = 0x0000,
 	NEAREST = 0x0001,
 	RB_SWIZZLE = 0x0002,
-	BACKBUFFER_FLIPPED = 0x0004,
-	POSITION_FLIPPED = 0x0008,
-	PILLARBOX = 0x0010,
+	BACKBUFFER_FLIPPED = 0x0004,  // Viewport/scissor coordinates are y-flipped.
+	POSITION_FLIPPED = 0x0008,    // Vertex position in the shader is y-flipped relative to the screen.
+	PILLARBOX = 0x0010,           // Squeeze the image horizontally. Used for the DarkStalkers hack.
 };
 ENUM_CLASS_BITOPS(OutputFlags);
 
@@ -82,6 +81,8 @@ public:
 		pixelWidth_ = w;
 		pixelHeight_ = h;
 	}
+
+	// NOTE: Should be un-rotated width/height.
 	void UpdateRenderSize(int rw, int rh) {
 		renderWidth_ = rw;
 		renderHeight_ = rh;
@@ -95,6 +96,18 @@ public:
 	}
 
 	bool UpdatePostShader();
+
+	void BeginFrame() {
+		presentedThisFrame_ = false;
+	}
+	bool PresentedThisFrame() const {
+		return presentedThisFrame_;
+	}
+	void NotifyPresent() {
+		// Something else did the present, skipping PresentationCommon.
+		// If you haven't called BindFramebufferAsRenderTarget, you must not set this.
+		presentedThisFrame_ = true;
+	}
 
 	void DeviceLost();
 	void DeviceRestore(Draw::DrawContext *draw);
@@ -132,7 +145,6 @@ protected:
 	Draw::SamplerState *samplerNearest_ = nullptr;
 	Draw::SamplerState *samplerLinear_ = nullptr;
 	Draw::Buffer *vdata_ = nullptr;
-	Draw::Buffer *idata_ = nullptr;
 
 	std::vector<Draw::Pipeline *> postShaderPipelines_;
 	std::vector<Draw::Framebuffer *> postShaderFramebuffers_;
@@ -158,6 +170,7 @@ protected:
 
 	bool usePostShader_ = false;
 	bool restorePostShader_ = false;
+	bool presentedThisFrame_ = false;
 	ShaderLanguage lang_;
 
 	struct PrevFBO {

@@ -29,6 +29,7 @@
 #include "Common/Math/math_util.h"
 #include "Common/GPU/D3D9/D3D9ShaderCompiler.h"
 #include "Common/GPU/thin3d.h"
+#include "Common/System/OSD.h"
 #include "Common/System/Display.h"
 
 #include "Common/CommonTypes.h"
@@ -37,7 +38,6 @@
 #include "Common/StringUtils.h"
 
 #include "Core/Config.h"
-#include "Core/Host.h"
 #include "GPU/Math3D.h"
 #include "GPU/GPUState.h"
 #include "GPU/ge_constants.h"
@@ -61,12 +61,12 @@ PSShader::PSShader(LPDIRECT3DDEVICE9 device, FShaderID id, const char *code) : i
 
 	if (!errorMessage.empty()) {
 		if (success) {
-			ERROR_LOG(G3D, "Warnings in shader compilation!");
+			ERROR_LOG(Log::G3D, "Warnings in shader compilation!");
 		} else {
-			ERROR_LOG(G3D, "Error in shader compilation!");
+			ERROR_LOG(Log::G3D, "Error in shader compilation!");
 		}
-		ERROR_LOG(G3D, "Messages: %s", errorMessage.c_str());
-		ERROR_LOG(G3D, "Shader source:\n%s", LineNumberString(code).c_str());
+		ERROR_LOG(Log::G3D, "Messages: %s", errorMessage.c_str());
+		ERROR_LOG(Log::G3D, "Shader source:\n%s", LineNumberString(code).c_str());
 		OutputDebugStringUTF8("Messages:\n");
 		OutputDebugStringUTF8(errorMessage.c_str());
 		Reporting::ReportMessage("D3D error in shader compilation: info: %s / code: %s", errorMessage.c_str(), code);
@@ -74,18 +74,14 @@ PSShader::PSShader(LPDIRECT3DDEVICE9 device, FShaderID id, const char *code) : i
 
 	if (!success) {
 		failed_ = true;
-		if (shader)
-			shader->Release();
-		shader = NULL;
+		shader = nullptr;
 		return;
 	} else {
-		VERBOSE_LOG(G3D, "Compiled pixel shader:\n%s\n", (const char *)code);
+		VERBOSE_LOG(Log::G3D, "Compiled pixel shader:\n%s\n", (const char *)code);
 	}
 }
 
 PSShader::~PSShader() {
-	if (shader)
-		shader->Release();
 }
 
 std::string PSShader::GetShaderString(DebugShaderStringType type) const {
@@ -110,12 +106,12 @@ VSShader::VSShader(LPDIRECT3DDEVICE9 device, VShaderID id, const char *code, boo
 	success = CompileVertexShaderD3D9(device, code, &shader, &errorMessage);
 	if (!errorMessage.empty()) {
 		if (success) {
-			ERROR_LOG(G3D, "Warnings in shader compilation!");
+			ERROR_LOG(Log::G3D, "Warnings in shader compilation!");
 		} else {
-			ERROR_LOG(G3D, "Error in shader compilation!");
+			ERROR_LOG(Log::G3D, "Error in shader compilation!");
 		}
-		ERROR_LOG(G3D, "Messages: %s", errorMessage.c_str());
-		ERROR_LOG(G3D, "Shader source:\n%s", code);
+		ERROR_LOG(Log::G3D, "Messages: %s", errorMessage.c_str());
+		ERROR_LOG(Log::G3D, "Shader source:\n%s", code);
 		OutputDebugStringUTF8("Messages:\n");
 		OutputDebugStringUTF8(errorMessage.c_str());
 		Reporting::ReportMessage("D3D error in shader compilation: info: %s / code: %s", errorMessage.c_str(), code);
@@ -123,18 +119,14 @@ VSShader::VSShader(LPDIRECT3DDEVICE9 device, VShaderID id, const char *code, boo
 
 	if (!success) {
 		failed_ = true;
-		if (shader)
-			shader->Release();
-		shader = NULL;
+		shader = nullptr;
 		return;
 	} else {
-		VERBOSE_LOG(G3D, "Compiled vertex shader:\n%s\n", (const char *)code);
+		VERBOSE_LOG(Log::G3D, "Compiled vertex shader:\n%s\n", (const char *)code);
 	}
 }
 
 VSShader::~VSShader() {
-	if (shader)
-		shader->Release();
 }
 
 std::string VSShader::GetShaderString(DebugShaderStringType type) const {
@@ -291,8 +283,8 @@ void ShaderManagerDX9::PSUpdateUniforms(u64 dirtyUniforms) {
 			doTextureAlpha = false;
 		}
 		// NOTE: Reversed value, more efficient in shader.
-		PSSetFloat(CONST_PS_TEX_NO_ALPHA, doTextureAlpha ? 0.0f : 1.0f);
-		PSSetFloat(CONST_PS_TEX_MUL, gstate.isColorDoublingEnabled() ? 2.0f : 1.0f);
+		float noAlphaMul[2] = { doTextureAlpha ? 0.0f : 1.0f, gstate.isColorDoublingEnabled() ? 2.0f : 1.0f };
+		PSSetFloatArray(CONST_PS_TEX_NO_ALPHA_MUL, noAlphaMul, 2);
 	}
 	if (dirtyUniforms & DIRTY_SHADERBLEND) {
 		PSSetColorUniform3(CONST_PS_BLENDFIXA, gstate.getFixA());
@@ -338,7 +330,7 @@ void ShaderManagerDX9::PSUpdateUniforms(u64 dirtyUniforms) {
 }
 
 const uint64_t vsUniforms = DIRTY_PROJMATRIX | DIRTY_PROJTHROUGHMATRIX | DIRTY_WORLDMATRIX | DIRTY_VIEWMATRIX | DIRTY_TEXMATRIX |
-DIRTY_FOGCOEFENABLE | DIRTY_BONE_UNIFORMS | DIRTY_UVSCALEOFFSET | DIRTY_DEPTHRANGE | DIRTY_CULLRANGE |
+DIRTY_FOGCOEF | DIRTY_BONE_UNIFORMS | DIRTY_UVSCALEOFFSET | DIRTY_DEPTHRANGE | DIRTY_CULLRANGE |
 DIRTY_AMBIENT | DIRTY_MATAMBIENTALPHA | DIRTY_MATSPECULAR | DIRTY_MATDIFFUSE | DIRTY_MATEMISSIVE | DIRTY_LIGHT0 | DIRTY_LIGHT1 | DIRTY_LIGHT2 | DIRTY_LIGHT3;
 
 void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
@@ -385,27 +377,21 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 	if (dirtyUniforms & DIRTY_TEXMATRIX) {
 		VSSetMatrix4x3_3(CONST_VS_TEXMTX, gstate.tgenMatrix);
 	}
-	if (dirtyUniforms & DIRTY_FOGCOEFENABLE) {
-		if (gstate.isFogEnabled() && !gstate.isModeThrough()) {
-			float fogcoef[2] = {
-				getFloat24(gstate.fog1),
-				getFloat24(gstate.fog2),
-			};
-			// The PSP just ignores infnan here (ignoring IEEE), so take it down to a valid float.
-			// Workaround for https://github.com/hrydgard/ppsspp/issues/5384#issuecomment-38365988
-			if (my_isnanorinf(fogcoef[0])) {
-				// Not really sure what a sensible value might be, but let's try 64k.
-				fogcoef[0] = std::signbit(fogcoef[0]) ? -65535.0f : 65535.0f;
-			}
-			if (my_isnanorinf(fogcoef[1])) {
-				fogcoef[1] = std::signbit(fogcoef[1]) ? -65535.0f : 65535.0f;
-			}
-			VSSetFloatArray(CONST_VS_FOGCOEF, fogcoef, 2);
-		} else {
-			// not very useful values, use as marker for disabled fog.
-			float fogcoef[2] = { -65536.0f, -65536.0f };
-			VSSetFloatArray(CONST_VS_FOGCOEF, fogcoef, 2);
+	if (dirtyUniforms & DIRTY_FOGCOEF) {
+		float fogcoef[2] = {
+			getFloat24(gstate.fog1),
+			getFloat24(gstate.fog2),
+		};
+		// The PSP just ignores infnan here (ignoring IEEE), so take it down to a valid float.
+		// Workaround for https://github.com/hrydgard/ppsspp/issues/5384#issuecomment-38365988
+		if (my_isnanorinf(fogcoef[0])) {
+			// Not really sure what a sensible value might be, but let's try 64k.
+			fogcoef[0] = std::signbit(fogcoef[0]) ? -65535.0f : 65535.0f;
 		}
+		if (my_isnanorinf(fogcoef[1])) {
+			fogcoef[1] = std::signbit(fogcoef[1]) ? -65535.0f : 65535.0f;
+		}
+		VSSetFloatArray(CONST_VS_FOGCOEF, fogcoef, 2);
 	}
 	// TODO: Could even set all bones in one go if they're all dirty.
 #ifdef USE_BONE_ARRAY
@@ -442,12 +428,16 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 
 	// Texturing
 	if (dirtyUniforms & DIRTY_UVSCALEOFFSET) {
-		const float invW = 1.0f / (float)gstate_c.curTextureWidth;
-		const float invH = 1.0f / (float)gstate_c.curTextureHeight;
-		const int w = gstate.getTextureWidth(0);
-		const int h = gstate.getTextureHeight(0);
-		const float widthFactor = (float)w * invW;
-		const float heightFactor = (float)h * invH;
+		float widthFactor = 1.0f;
+		float heightFactor = 1.0f;
+		if (gstate_c.textureIsFramebuffer) {
+			const float invW = 1.0f / (float)gstate_c.curTextureWidth;
+			const float invH = 1.0f / (float)gstate_c.curTextureHeight;
+			const int w = gstate.getTextureWidth(0);
+			const int h = gstate.getTextureHeight(0);
+			widthFactor = (float)w * invW;
+			heightFactor = (float)h * invH;
+		}
 		float uvscaleoff[4];
 		uvscaleoff[0] = widthFactor;
 		uvscaleoff[1] = heightFactor;
@@ -462,11 +452,11 @@ void ShaderManagerDX9::VSUpdateUniforms(u64 dirtyUniforms) {
 		float vpZCenter = gstate.getViewportZCenter();
 
 		// These are just the reverse of the formulas in GPUStateUtils.
-		float halfActualZRange = gstate_c.vpDepthScale != 0.0f ? vpZScale / gstate_c.vpDepthScale : 0.0f;
+		float halfActualZRange = InfToZero(gstate_c.vpDepthScale != 0.0f ? vpZScale / gstate_c.vpDepthScale : 0.0f);
 		float minz = -((gstate_c.vpZOffset * halfActualZRange) - vpZCenter) - halfActualZRange;
 		float viewZScale = halfActualZRange * 2.0f;
 		float viewZCenter = minz;
-		float reverseScale = 2.0f * (1.0f / gstate_c.vpDepthScale);
+		float reverseScale = InfToZero(gstate_c.vpDepthScale != 0.0f ? 2.0f * (1.0f / gstate_c.vpDepthScale) : 0.0f);
 		float reverseTranslate = gstate_c.vpZOffset * 0.5f + 0.5f;
 
 		float data[4] = { viewZScale, viewZCenter, reverseTranslate, reverseScale };
@@ -537,26 +527,21 @@ void ShaderManagerDX9::Clear() {
 	}
 	fsCache_.clear();
 	vsCache_.clear();
-	DirtyShader();
+	DirtyLastShader();
 }
 
-void ShaderManagerDX9::ClearCache(bool deleteThem) {
+void ShaderManagerDX9::ClearShaders() {
 	Clear();
 }
 
-
-void ShaderManagerDX9::DirtyShader() {
+void ShaderManagerDX9::DirtyLastShader() {
 	// Forget the last shader ID
 	lastFSID_.set_invalid();
 	lastVSID_.set_invalid();
 	lastVShader_ = nullptr;
 	lastPShader_ = nullptr;
+	// TODO: Probably not necessary to dirty uniforms here on DX9.
 	gstate_c.Dirty(DIRTY_ALL_UNIFORMS | DIRTY_VERTEXSHADER_STATE | DIRTY_FRAGMENTSHADER_STATE);
-}
-
-void ShaderManagerDX9::DirtyLastShader() { // disables vertex arrays
-	lastVShader_ = nullptr;
-	lastPShader_ = nullptr;
 }
 
 VSShader *ShaderManagerDX9::ApplyShader(bool useHWTransform, bool useHWTessellation, VertexDecoder *decoder, bool weightsAsFloat, bool useSkinInDecode, const ComputedPipelineState &pipelineState) {
@@ -601,15 +586,15 @@ VSShader *ShaderManagerDX9::ApplyShader(bool useHWTransform, bool useHWTessellat
 			vs = new VSShader(device_, VSID, codeBuffer_, useHWTransform);
 		}
 		if (!vs || vs->Failed()) {
-			auto gr = GetI18NCategory("Graphics");
 			if (!vs) {
 				// TODO: Report this?
-				ERROR_LOG(G3D, "Shader generation failed, falling back to software transform");
+				ERROR_LOG(Log::G3D, "Shader generation failed, falling back to software transform");
 			} else {
-				ERROR_LOG(G3D, "Shader compilation failed, falling back to software transform");
+				ERROR_LOG(Log::G3D, "Shader compilation failed, falling back to software transform");
 			}
 			if (!g_Config.bHideSlowWarnings) {
-				host->NotifyUserMessage(gr->T("hardware transform error - falling back to software"), 2.5f, 0xFF3030FF);
+				auto gr = GetI18NCategory(I18NCat::GRAPHICS);
+				g_OSD.Show(OSDType::MESSAGE_ERROR, gr->T("hardware transform error - falling back to software"), 2.5f);
 			}
 			delete vs;
 
@@ -660,8 +645,8 @@ VSShader *ShaderManagerDX9::ApplyShader(bool useHWTransform, bool useHWTessellat
 		gstate_c.CleanUniforms();
 	}
 
-	device_->SetPixelShader(fs->shader);
-	device_->SetVertexShader(vs->shader);
+	device_->SetPixelShader(fs->shader.Get());
+	device_->SetVertexShader(vs->shader.Get());
 
 	lastPShader_ = fs;
 	lastVShader_ = vs;
@@ -673,21 +658,23 @@ std::vector<std::string> ShaderManagerDX9::DebugGetShaderIDs(DebugShaderType typ
 	std::vector<std::string> ids;
 	switch (type) {
 	case SHADER_TYPE_VERTEX:
-	{
 		for (auto iter : vsCache_) {
 			iter.first.ToString(&id);
 			ids.push_back(id);
 		}
-	}
-	break;
+		break;
 	case SHADER_TYPE_FRAGMENT:
-	{
 		for (auto iter : fsCache_) {
 			iter.first.ToString(&id);
 			ids.push_back(id);
 		}
-	}
-	break;
+		break;
+	case SHADER_TYPE_GEOMETRY:
+	case SHADER_TYPE_PIPELINE:
+	case SHADER_TYPE_SAMPLER:
+	case SHADER_TYPE_TEXTURE:
+	case SHADER_TYPE_VERTEXLOADER:
+		break;
 	}
 	return ids;
 }

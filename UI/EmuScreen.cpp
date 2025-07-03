@@ -293,9 +293,6 @@ void EmuScreen::ProcessGameBoot(const Path &filename) {
 		coreParam.gpuCore = GPUCORE_GLES;
 		break;
 #endif
-	case GPUBackend::DIRECT3D9:
-		coreParam.gpuCore = GPUCORE_DIRECTX9;
-		break;
 	case GPUBackend::VULKAN:
 		coreParam.gpuCore = GPUCORE_VULKAN;
 		break;
@@ -539,9 +536,8 @@ void EmuScreen::sendMessage(UIMessage message, const char *value) {
 			WARN_LOG(Log::Loader, "Can't stop during a pending boot");
 			return;
 		}
-		Achievements::UnloadGame();
-		PSP_Shutdown(true);
-		System_Notify(SystemNotification::DISASSEMBLY);
+		// The destructor will take care of shutting down.
+		screenManager()->switchScreen(new MainScreen());
 	} else if (message == UIMessage::REQUEST_GAME_RESET) {
 		if (bootPending_) {
 			WARN_LOG(Log::Loader, "Can't reset during a pending boot");
@@ -1470,16 +1466,11 @@ void EmuScreen::update() {
 
 bool EmuScreen::checkPowerDown() {
 	// This is for handling things like sceKernelExitGame().
-	if (coreState == CORE_POWERDOWN && PSP_GetBootState() == BootState::Complete && !bootPending_) {
-		bool shutdown = false;
-		if (PSP_IsInited()) {
-			Achievements::UnloadGame();
-			PSP_Shutdown(true);
-			shutdown = true;
-		}
+	// Also for REQUEST_STOP.
+	if (coreState == CORE_POWERDOWN && (PSP_GetBootState() == BootState::Complete || PSP_GetBootState() == BootState::Off) && !bootPending_) {
 		INFO_LOG(Log::System, "SELF-POWERDOWN!");
 		screenManager()->switchScreen(new MainScreen());
-		return shutdown;
+		return true;
 	}
 	return false;
 }

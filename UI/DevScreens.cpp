@@ -28,6 +28,7 @@
 #include "ppsspp_config.h"
 
 #include "Common/Common.h"
+#include "Common/Audio/AudioBackend.h"
 #include "Common/System/Display.h"
 #include "Common/System/NativeApp.h"
 #include "Common/System/System.h"
@@ -607,11 +608,6 @@ void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 	if (GetGPUBackend() != GPUBackend::VULKAN) {
 		gpuInfo->Add(new InfoItem(si->T("Driver Version"), System_GetProperty(SYSPROP_GPUDRIVER_VERSION)));
 	}
-#if !PPSSPP_PLATFORM(UWP)
-	if (GetGPUBackend() == GPUBackend::DIRECT3D9) {
-		gpuInfo->Add(new InfoItem(si->T("D3DCompiler Version"), StringFromFormat("%d", GetD3DCompilerVersion())));
-	}
-#endif
 #endif
 	if (GetGPUBackend() == GPUBackend::OPENGL) {
 		gpuInfo->Add(new InfoItem(si->T("Core Context"), gl_extensions.IsCoreContext ? di->T("Active") : di->T("Inactive")));
@@ -655,7 +651,14 @@ void SystemInfoScreen::CreateDeviceInfoTab(UI::LinearLayout *deviceSpecs) {
 	osInformation->Add(new InfoItem(si->T("PPSSPP build"), build));
 
 	CollapsibleSection *audioInformation = deviceSpecs->Add(new CollapsibleSection(si->T("Audio Information")));
-	audioInformation->Add(new InfoItem(si->T("Sample rate"), StringFromFormat(si->T_cstr("%d Hz"), System_GetPropertyInt(SYSPROP_AUDIO_SAMPLE_RATE))));
+	extern AudioBackend *g_audioBackend;
+	if (g_audioBackend) {
+		char fmtStr[256];
+		g_audioBackend->DescribeOutputFormat(fmtStr, sizeof(fmtStr));
+		audioInformation->Add(new InfoItem(si->T("Stream format"), fmtStr));
+	} else {
+		audioInformation->Add(new InfoItem(si->T("Sample rate"), StringFromFormat(si->T_cstr("%d Hz"), System_GetPropertyInt(SYSPROP_AUDIO_SAMPLE_RATE))));
+	}
 	int framesPerBuffer = System_GetPropertyInt(SYSPROP_AUDIO_FRAMES_PER_BUFFER);
 	if (framesPerBuffer > 0) {
 		audioInformation->Add(new InfoItem(si->T("Frames per buffer"), StringFromFormat("%d", framesPerBuffer)));
@@ -1282,14 +1285,13 @@ void TouchTestScreen::CreateViews() {
 	root_->Add(theTwo);
 
 #if !PPSSPP_PLATFORM(UWP)
-	static const char *renderingBackend[] = { "OpenGL", "Direct3D 9", "Direct3D 11", "Vulkan" };
+	static const char *renderingBackend[] = { "OpenGL", "(n/a)", "Direct3D 11", "Vulkan" };
 	PopupMultiChoice *renderingBackendChoice = root_->Add(new PopupMultiChoice(&g_Config.iGPUBackend, gr->T("Backend"), renderingBackend, (int)GPUBackend::OPENGL, ARRAY_SIZE(renderingBackend), I18NCat::GRAPHICS, screenManager()));
 	renderingBackendChoice->OnChoice.Handle(this, &TouchTestScreen::OnRenderingBackend);
 
 	if (!g_Config.IsBackendEnabled(GPUBackend::OPENGL))
 		renderingBackendChoice->HideChoice((int)GPUBackend::OPENGL);
-	if (!g_Config.IsBackendEnabled(GPUBackend::DIRECT3D9))
-		renderingBackendChoice->HideChoice((int)GPUBackend::DIRECT3D9);
+	renderingBackendChoice->HideChoice(1);   // previously D3D9
 	if (!g_Config.IsBackendEnabled(GPUBackend::DIRECT3D11))
 		renderingBackendChoice->HideChoice((int)GPUBackend::DIRECT3D11);
 	if (!g_Config.IsBackendEnabled(GPUBackend::VULKAN))
